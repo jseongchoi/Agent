@@ -20,6 +20,9 @@ future open-model APIs.
 python -m semicon_agent "analyze yield and SPC" --data examples/sample_wafer.csv
 ```
 
+For the full architecture and extension guide, see
+[`docs/AGENT_GUIDE.md`](docs/AGENT_GUIDE.md).
+
 For a full report:
 
 ```powershell
