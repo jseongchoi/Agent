@@ -3,39 +3,84 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from dataclasses import asdict
+from pathlib import Path
 
-from semicon_agent.core.agent import SemiconductorAgent
+from semicon_agent.core.agent import AgentRun, SemiconductorAgent
+from semicon_agent.core.policy import ExecutionPolicy
+from semicon_agent.core.session import SQLiteRunStore
+from semicon_agent.core.trace import redact
 from semicon_agent.llm.mock import MockLLM
 from semicon_agent.llm.open_model import OpenModelLLM
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Semiconductor data analysis agent.")
-    parser.add_argument("request", help="Natural language analysis request.")
+    parser.add_argument("request", nargs="?", help="Natural language analysis request.")
     parser.add_argument("--data", help="Path to CSV/TSV/XLSX semiconductor data.")
     parser.add_argument("--llm", choices=["mock", "open-model"], default="mock")
     parser.add_argument("--base-url", default=os.getenv("OPEN_MODEL_BASE_URL", "http://localhost:8000/v1"))
     parser.add_argument("--model", default=os.getenv("OPEN_MODEL_NAME", "open-model"))
     parser.add_argument("--api-key", default=os.getenv("OPEN_MODEL_API_KEY"))
-    parser.add_argument("--json", action="store_true", help="Print full run payload as JSON.")
+    parser.add_argument("--allow-remote-llm", action="store_true", help="Allow non-local HTTPS open-model endpoints.")
+    parser.add_argument("--allow-root", action="append", default=[], help="Additional allowed data root. Can be used multiple times.")
+    parser.add_argument(
+        "--approve-risk",
+        action="append",
+        choices=["safe", "read", "write", "external", "destructive"],
+        default=[],
+        help="Approve a tool risk level for this run.",
+    )
+    parser.add_argument("--yes", action="store_true", help="Approve all tool risk levels for this run.")
+    parser.add_argument("--session-db", default=".semicon_agent/runs.sqlite", help="SQLite run/session database path.")
+    parser.add_argument("--list-runs", action="store_true", help="List recent persisted runs and exit.")
+    parser.add_argument("--show-trace", help="Print persisted trace events for a run id and exit.")
+    parser.add_argument("--json", action="store_true", help="Print redacted run payload as JSON.")
+    parser.add_argument("--unsafe-json", action="store_true", help="Print raw run payload as JSON.")
     args = parser.parse_args()
 
+    run_store = SQLiteRunStore(args.session_db)
+    if args.list_runs:
+        print(json.dumps(run_store.list_runs(), indent=2, ensure_ascii=False, default=str))
+        return
+    if args.show_trace:
+        print(json.dumps(run_store.get_events(args.show_trace), indent=2, ensure_ascii=False, default=str))
+        return
+    if not args.request:
+        parser.error("request is required unless --list-runs or --show-trace is used.")
+
     if args.llm == "open-model":
-        llm = OpenModelLLM(base_url=args.base_url, model=args.model, api_key=args.api_key)
+        llm = OpenModelLLM(
+            base_url=args.base_url,
+            model=args.model,
+            api_key=args.api_key,
+            allow_remote=args.allow_remote_llm,
+        )
     else:
         llm = MockLLM()
 
-    agent = SemiconductorAgent(llm=llm)
+    approved = {"safe", "read", "write", "external", "destructive"} if args.yes else {"safe", "read", *args.approve_risk}
+    allowed_roots = tuple(Path(root).expanduser().resolve() for root in [Path.cwd(), *args.allow_root])
+    policy = ExecutionPolicy(approved_risks=frozenset(approved), allowed_roots=allowed_roots)
+    agent = SemiconductorAgent(llm=llm, policy=policy, run_store=run_store)
     run = agent.run(args.request, data_path=args.data)
 
-    if args.json:
-        payload = asdict(run)
-        payload["plan"] = run.plan.model_dump()
-        payload["tool_results"] = [result.model_dump() for result in run.tool_results]
-        print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
+    if args.json or args.unsafe_json:
+        print(json.dumps(_run_payload(run, redact_payload=not args.unsafe_json), indent=2, ensure_ascii=False, default=str))
     else:
         print(run.final_answer)
+        print(f"\nrun_id: {run.run_id}")
+
+
+def _run_payload(run: AgentRun, redact_payload: bool = True) -> dict[str, object]:
+    payload = {
+        "run_id": run.run_id,
+        "request": run.request,
+        "plan": run.plan.model_dump(),
+        "tool_results": [result.model_dump() for result in run.tool_results],
+        "final_answer": run.final_answer,
+        "events": [event.to_dict() for event in run.events],
+    }
+    return redact(payload) if redact_payload else payload
 
 
 if __name__ == "__main__":

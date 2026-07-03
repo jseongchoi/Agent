@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from semicon_agent.tools.base import ToolSpec
 from semicon_agent.tools.semiconductor import build_semiconductor_tools
+from semicon_agent.tools.validation import validate_arguments
 
 
 class ToolRegistry:
@@ -23,7 +24,9 @@ class ToolRegistry:
             raise KeyError(f"Unknown tool: {name}") from exc
 
     def run(self, name: str, arguments: dict[str, object]) -> object:
-        return self.get(name).run(dict(arguments))
+        tool = self.get(name)
+        validated = validate_arguments(tool.parameters, dict(arguments))
+        return tool.run(validated)
 
 
 def build_default_registry() -> ToolRegistry:

@@ -5,11 +5,13 @@ import os
 import re
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from typing import Any
 
 from pydantic import ValidationError
 
 from semicon_agent.models import AgentPlan, ToolResult
+from semicon_agent.llm.privacy import redact_for_llm
 from semicon_agent.tools.base import ToolSpec
 
 
@@ -22,8 +24,10 @@ class OpenModelLLM:
         model: str,
         api_key: str | None = None,
         timeout: float = 60.0,
+        allow_remote: bool = False,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        _validate_endpoint(self.base_url, allow_remote=allow_remote)
         self.model = model
         self.api_key = api_key or os.getenv("OPEN_MODEL_API_KEY")
         self.timeout = timeout
@@ -58,7 +62,7 @@ class OpenModelLLM:
                 "content": json.dumps(
                     {
                         "request": user_request,
-                        "context": context,
+                        "context": redact_for_llm(context),
                         "available_tools": tool_specs,
                     },
                     ensure_ascii=True,
@@ -81,7 +85,7 @@ class OpenModelLLM:
         tool_results: list[ToolResult],
         context: dict[str, object],
     ) -> str:
-        result_payload = [result.model_dump() for result in tool_results]
+        result_payload = redact_for_llm([result.model_dump() for result in tool_results])
         messages = [
             {
                 "role": "system",
@@ -96,7 +100,7 @@ class OpenModelLLM:
                 "content": json.dumps(
                     {
                         "request": user_request,
-                        "context": context,
+                        "context": redact_for_llm(context),
                         "tool_results": result_payload,
                     },
                     ensure_ascii=True,
@@ -150,3 +154,13 @@ def _extract_json(text: str) -> str:
     if start == -1 or end == -1 or end <= start:
         raise ValueError("No JSON object found.")
     return text[start : end + 1]
+
+
+def _validate_endpoint(base_url: str, allow_remote: bool) -> None:
+    parsed = urlparse(base_url)
+    host = parsed.hostname or ""
+    is_local = host in {"localhost", "127.0.0.1", "::1"}
+    if not is_local and not allow_remote:
+        raise ValueError("Remote open-model endpoints require allow_remote=True.")
+    if not is_local and parsed.scheme != "https":
+        raise ValueError("Remote open-model endpoints must use HTTPS.")

@@ -28,6 +28,10 @@ Python으로 구성하는 것이다.
 - `OpenModelLLM`: OpenAI-compatible `/chat/completions` API adapter
 - `SemiconductorAgent`: plan, tool execution, final synthesis 실행 코어
 - `ToolRegistry`: Python 함수를 tool로 등록하고 실행
+- `ToolRuntime`: argument validation, path policy, permission policy 적용
+- `ExecutionPolicy`: tool risk와 data path boundary 관리
+- `TraceRecorder`: redacted run event 기록
+- `SQLiteRunStore`: run/session history 저장
 - `semiconductor.py`: profile, yield, SPC, anomaly, correlation, report demo tools
 - CLI: `python -m semicon_agent`
 - tests: pytest 기반 기본 회귀 테스트
@@ -35,7 +39,6 @@ Python으로 구성하는 것이다.
 아직 구현하지 않은 주요 항목은 다음과 같다.
 
 - streaming response
-- persistent memory
 - human approval workflow
 - workflow graph executor
 - tracing dashboard
@@ -581,23 +584,24 @@ flowchart TD
 | 필요한 계층 | 현재 구현 |
 | --- | --- |
 | CLI | 있음 |
-| Session Manager | 없음 |
+| Session Manager | SQLite run store 있음 |
 | Orchestrator | 기본 구현 있음 |
 | Prompt Builder | `OpenModelLLM` 내부에 단순 구현 |
 | LLM Provider | Mock/Open-model 있음 |
-| Tool Runtime | 기본 registry 있음 |
-| Memory Store | 없음 |
-| Permission Policy | 없음 |
-| Tracing | 없음 |
+| Tool Runtime | validation/policy/path boundary 있음 |
+| Memory Store | run history 저장 있음 |
+| Permission Policy | risk level gate 있음 |
+| Tracing | redacted run event 있음 |
 
-따라서 "Codex/Claude Code 같은 구조"로 가려면 다음 세 가지가 먼저 필요하다.
+따라서 다음 단계에서 "Codex/Claude Code 같은 구조"에 더 가까워지려면 다음 세 가지가
+우선이다.
 
-1. session/run store
-2. permission policy
-3. tracing/logging
+1. multi-step orchestration loop
+2. human approval workflow
+3. streaming/provider layer 분리
 
-이 세 가지가 있어야 agent가 무슨 판단을 했고, 무엇을 실행했고, 왜 실패했는지
-나중에 추적할 수 있다.
+session/run store, permission policy, tracing/logging은 core v1에 들어갔다. 아직은
+단일 plan 실행 구조이므로 장기 작업을 하려면 orchestration loop를 확장해야 한다.
 
 ### 3-1-16. Semicon Agent에 적용할 설계 방향
 
@@ -655,11 +659,11 @@ semicon_agent/
 | 파일 수정 | 가능 | 아직 없음 |
 | shell 실행 | 가능 | 아직 없음 |
 | 테스트 자동 실행 | 가능 | 수동/CLI 수준 |
-| 권한 관리 | 제품 차원 제공 | 없음 |
-| memory | 제품별 지원 | 없음 |
+| 권한 관리 | 제품 차원 제공 | core v1 policy 있음 |
+| memory | 제품별 지원 | SQLite run history 있음 |
 | hooks | 제품별 지원 | 없음 |
 | subagents | 제품별 지원 | 없음 |
-| tracing | 제품별 지원 | 없음 |
+| tracing | 제품별 지원 | redacted event trace 있음 |
 | 도메인 tool | 사용자가 확장 | demo 수준 |
 
 따라서 이 프로젝트의 다음 목표는 분석 함수를 정교하게 만드는 것이 아니라, coding
@@ -721,6 +725,29 @@ python -m semicon_agent "create an overall report" --data examples/sample_wafer.
 python -m semicon_agent "create an overall report" --data examples/sample_wafer.csv --json
 ```
 
+`--json`은 기본적으로 경로와 민감 키를 redaction한다. 원시 payload가 필요한 개발
+상황에서는 `--unsafe-json`을 명시한다.
+
+최근 실행 목록:
+
+```powershell
+python -m semicon_agent --list-runs
+```
+
+특정 실행 trace 확인:
+
+```powershell
+python -m semicon_agent --show-trace <run_id>
+```
+
+위험도가 높은 tool을 승인하려면 risk level을 명시한다.
+
+```powershell
+python -m semicon_agent "run approved task" --approve-risk external
+```
+
+모든 risk level을 승인하는 `--yes`는 개발/테스트 상황에서만 사용한다.
+
 ## 6. Open-model API 연결
 
 `OpenModelLLM`은 OpenAI-compatible chat completions API를 가정한다.
@@ -750,17 +777,25 @@ $env:OPEN_MODEL_NAME="my-open-model"
 $env:OPEN_MODEL_API_KEY="..."
 ```
 
+localhost가 아닌 endpoint는 HTTPS여야 하며, CLI에서 `--allow-remote-llm`을 명시해야
+한다. 기본값은 외부 endpoint 차단이다.
+
 ## 7. 주요 코드 위치
 
 | 영역 | 파일 |
 | --- | --- |
 | Agent core | `semicon_agent/core/agent.py` |
+| Execution policy | `semicon_agent/core/policy.py` |
+| Trace events | `semicon_agent/core/trace.py` |
+| SQLite run store | `semicon_agent/core/session.py` |
 | 실행 모델 | `semicon_agent/models.py` |
 | LLM protocol | `semicon_agent/llm/base.py` |
 | Mock LLM | `semicon_agent/llm/mock.py` |
 | Open-model adapter | `semicon_agent/llm/open_model.py` |
 | Tool base | `semicon_agent/tools/base.py` |
 | Tool registry | `semicon_agent/tools/registry.py` |
+| Tool runtime | `semicon_agent/tools/runtime.py` |
+| Tool validation | `semicon_agent/tools/validation.py` |
 | Semiconductor demo tools | `semicon_agent/tools/semiconductor.py` |
 | CLI | `semicon_agent/cli.py` |
 | Tests | `tests/` |
@@ -771,8 +806,10 @@ $env:OPEN_MODEL_API_KEY="..."
 2. `SemiconductorAgent.run()`이 context를 만든다.
 3. LLM이 `AgentPlan`을 반환한다.
 4. `AgentPlan.tool_calls`에 있는 tool을 순서대로 실행한다.
-5. 각 실행 결과는 `ToolResult`로 저장된다.
-6. LLM이 tool 결과를 받아 최종 응답을 만든다.
+5. `ToolRuntime`이 schema validation, path policy, permission policy를 적용한다.
+6. 각 실행 결과는 `ToolResult`로 저장된다.
+7. 주요 단계는 `RunEvent`로 기록되고 SQLite run store에 저장된다.
+8. LLM이 tool 결과를 받아 최종 응답을 만든다.
 
 현재 `MockLLM`은 keyword 기반으로 tool을 선택한다. 실제 LLM을 연결하면 모델이
 tool 설명과 schema를 보고 tool call 계획을 생성한다.
@@ -810,6 +847,8 @@ ToolSpec(
         "required": ["path"],
     },
     handler=wafer_map_summary,
+    risk_level="read",
+    data_access=("table",),
 )
 ```
 
