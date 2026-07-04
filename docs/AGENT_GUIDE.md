@@ -34,6 +34,8 @@ Python으로 구성하는 것이다.
 - `TraceRecorder`: redacted run event 기록
 - `SQLiteRunStore`: run/session history 저장
 - `StreamingLLM`: streaming-ready synthesis provider protocol
+- FastAPI server: `semicon_agent/server/api.py`
+- Web UI: `GET /`
 - `semiconductor.py`: profile, yield, SPC, anomaly, correlation, report demo tools
 - CLI: `python -m semicon_agent`
 - tests: pytest 기반 기본 회귀 테스트
@@ -42,8 +44,6 @@ Python으로 구성하는 것이다.
 
 - workflow graph executor
 - tracing dashboard
-- FastAPI server
-- web UI
 - RAG/document ingestion
 - production semiconductor analytics
 
@@ -598,10 +598,11 @@ flowchart TD
 
 1. workflow graph executor
 2. provider별 true streaming 구현
-3. FastAPI/UI boundary
+3. graph workflow/resumable approval
 
 session/run store, permission policy, tracing/logging은 core v1에 들어갔다. core v2에는
 bounded multi-step orchestration, approval provider, streaming-ready interface가 들어갔다.
+core v3에는 FastAPI server, simple web UI, artifact upload/report store가 들어갔다.
 
 ### 3-1-16. Semicon Agent에 적용할 설계 방향
 
@@ -644,8 +645,8 @@ semicon_agent/
 4. tool argument validation 강화
 5. bounded multi-step orchestration 추가
 6. streaming 가능한 LLM provider interface
-7. FastAPI endpoint 추가
-8. 간단한 web UI 추가
+7. FastAPI endpoint 추가 - core v3 완료
+8. 간단한 web UI 추가 - core v3 완료
 
 반도체 분석 함수 자체는 나중 문제다. 중요한 것은 agent platform이 안전하고
 관찰 가능하며 교체 가능해야 한다는 점이다.
@@ -801,6 +802,9 @@ localhost가 아닌 endpoint는 HTTPS여야 하며, CLI에서 `--allow-remote-ll
 | Tool validation | `semicon_agent/tools/validation.py` |
 | Semiconductor demo tools | `semicon_agent/tools/semiconductor.py` |
 | CLI | `semicon_agent/cli.py` |
+| FastAPI server | `semicon_agent/server/api.py` |
+| Server runner | `semicon_agent/server/__main__.py` |
+| Artifact store | `semicon_agent/core/artifacts.py` |
 | Tests | `tests/` |
 
 ## 8. Agent 실행 흐름
@@ -943,9 +947,10 @@ python -m pytest -p no:cacheprovider
 
 ### Phase 5. Production interface
 
-- FastAPI server
+- FastAPI server - core v3 완료
+- simple web UI - core v3 완료
+- upload/report artifact store - core v3 완료
 - background worker
-- simple web UI
 - auth boundary
 - audit log
 

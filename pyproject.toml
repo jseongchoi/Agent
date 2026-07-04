@@ -14,10 +14,19 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "openpyxl>=3.1",
+    "httpx>=0.28",
+    "python-multipart>=0.0.20",
+]
+web = [
+    "fastapi>=0.116",
+    "uvicorn>=0.34",
+    "httpx>=0.28",
+    "python-multipart>=0.0.20",
 ]
 
 [project.scripts]
 semicon-agent = "semicon_agent.cli:main"
+semicon-agent-server = "semicon_agent.server.__main__:main"
 
 [build-system]
 requires = ["setuptools>=68"]

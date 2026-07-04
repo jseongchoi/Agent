@@ -81,6 +81,25 @@ Prompt for tools that require approval:
 python -m semicon_agent "run approved task" --interactive-approval
 ```
 
+Run the local API server and web UI:
+
+```powershell
+python -m semicon_agent.server --host 127.0.0.1 --port 8008
+```
+
+Then open `http://127.0.0.1:8008`.
+
+Primary API endpoints:
+
+- `GET /health`
+- `GET /`
+- `POST /api/artifacts`
+- `GET /api/artifacts`
+- `GET /api/artifacts/{name}`
+- `POST /api/runs`
+- `GET /api/runs`
+- `GET /api/runs/{run_id}/trace`
+
 The semiconductor analysis tools are intentionally lightweight demo tools. The
 main point is to validate agent planning, tool routing, execution, and later LLM
 replacement. Replace `semicon_agent/tools/semiconductor.py` with production
