@@ -168,6 +168,8 @@ def _extract_json(text: str) -> str:
 
 def _validate_endpoint(base_url: str, allow_remote: bool) -> None:
     parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Open-model endpoint must use HTTP or HTTPS.")
     host = parsed.hostname or ""
     is_local = host in {"localhost", "127.0.0.1", "::1"}
     if not is_local and not allow_remote:

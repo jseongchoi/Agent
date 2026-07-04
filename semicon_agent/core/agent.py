@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from semicon_agent.core.approval import ApprovalProvider
+from semicon_agent.config import validate_max_steps
 from semicon_agent.llm.base import BaseLLM
 from semicon_agent.models import AgentPlan, ToolResult
 from semicon_agent.core.policy import ExecutionPolicy, RiskLevel
@@ -50,6 +51,7 @@ class SemiconductorAgent:
         stream: bool = False,
         **context: Any,
     ) -> AgentRun:
+        validate_max_steps(max_steps)
         trace = TraceRecorder()
         run_context: dict[str, object] = dict(context)
         policy = self.policy
@@ -86,7 +88,11 @@ class SemiconductorAgent:
                 "tool_results": [result.model_dump() for result in tool_results],
             }
             trace.emit("llm.plan.start", "Requesting plan from LLM.", step_index=step_index)
-            plan = self.llm.plan(user_request, self.registry.list(), step_context)
+            try:
+                plan = self.llm.plan(user_request, self.registry.list(), step_context)
+            except Exception as exc:
+                self._persist_failure(trace, exc)
+                raise
             plans.append(plan)
             trace.emit(
                 "llm.plan.end",
@@ -112,7 +118,16 @@ class SemiconductorAgent:
             for call in plan.tool_calls:
                 arguments = dict(call.arguments)
                 if data_path:
-                    arguments["path"] = data_path
+                    try:
+                        tool = self.registry.get(call.name)
+                    except KeyError:
+                        tool = None
+                    if tool is None:
+                        arguments["path"] = data_path
+                    else:
+                        for field in tool.path_fields:
+                            if field in tool.parameters.get("properties", {}):
+                                arguments[field] = data_path
                 step_results.append(runtime.run(call.name, arguments))
             tool_results.extend(step_results)
 
@@ -122,19 +137,23 @@ class SemiconductorAgent:
 
         if tool_results:
             trace.emit("llm.synthesis.start", "Requesting final synthesis from LLM.")
-            if stream:
-                chunks = []
-                stream_synthesize = getattr(self.llm, "stream_synthesize", None)
-                if stream_synthesize is None:
-                    chunks.append(self.llm.synthesize(user_request, tool_results, run_context))
+            try:
+                if stream:
+                    chunks = []
+                    stream_synthesize = getattr(self.llm, "stream_synthesize", None)
+                    if stream_synthesize is None:
+                        chunks.append(self.llm.synthesize(user_request, tool_results, run_context))
+                    else:
+                        iterator = stream_synthesize(user_request, tool_results, run_context)
+                        for chunk in iterator:
+                            trace.emit("llm.stream.chunk", "Received synthesis stream chunk.", event=chunk.event, done=chunk.done)
+                            chunks.append(chunk.content)
+                    final_answer = "".join(chunks)
                 else:
-                    iterator = stream_synthesize(user_request, tool_results, run_context)
-                    for chunk in iterator:
-                        trace.emit("llm.stream.chunk", "Received synthesis stream chunk.", event=chunk.event, done=chunk.done)
-                        chunks.append(chunk.content)
-                final_answer = "".join(chunks)
-            else:
-                final_answer = self.llm.synthesize(user_request, tool_results, run_context)
+                    final_answer = self.llm.synthesize(user_request, tool_results, run_context)
+            except Exception as exc:
+                self._persist_failure(trace, exc)
+                raise
             trace.emit("llm.synthesis.end", "Final synthesis received.")
         else:
             plan = plans[-1] if plans else AgentPlan()
@@ -158,3 +177,14 @@ class SemiconductorAgent:
             step_count=len(plans),
             stop_reason=stop_reason,
         )
+
+    def _persist_failure(self, trace: TraceRecorder, exc: Exception) -> None:
+        trace.emit(
+            "run.error",
+            "Agent run failed.",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        if self.run_store:
+            self.run_store.save_events(trace.events)
+            self.run_store.save_run_end(trace.run_id, f"ERROR: {exc}", status="failed")

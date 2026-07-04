@@ -19,6 +19,37 @@ def test_health_endpoint(tmp_path: Path) -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_status_endpoint_reports_runtime_shape(tmp_path: Path) -> None:
+    client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
+
+    response = client.get("/api/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["tool_count"] >= 5
+    assert "yield_summary" in payload["tools"]
+    assert payload["run_count"] == 0
+    assert "session_db" not in payload
+
+
+def test_status_endpoint_can_expose_debug_paths_when_enabled(tmp_path: Path) -> None:
+    client = TestClient(
+        create_app(
+            session_db=tmp_path / "runs.sqlite",
+            artifact_root=tmp_path / "artifacts",
+            debug_status=True,
+        )
+    )
+
+    response = client.get("/api/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["session_db"].endswith("runs.sqlite")
+    assert payload["allowed_roots"]
+
+
 def test_run_endpoint_persists_run_trace_and_artifact(tmp_path: Path) -> None:
     client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
 
@@ -89,12 +120,18 @@ def test_run_rejects_data_path_outside_allowed_roots(tmp_path: Path) -> None:
         },
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 403
     assert "outside allowed server roots" in response.json()["detail"]
 
 
 def test_bad_remote_open_model_endpoint_returns_400(tmp_path: Path) -> None:
-    client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
+    client = TestClient(
+        create_app(
+            session_db=tmp_path / "runs.sqlite",
+            artifact_root=tmp_path / "artifacts",
+            allow_client_llm_config=True,
+        )
+    )
 
     response = client.post(
         "/api/runs",
@@ -108,6 +145,79 @@ def test_bad_remote_open_model_endpoint_returns_400(tmp_path: Path) -> None:
 
     assert response.status_code == 400
     assert "Remote open-model endpoints" in response.json()["detail"]
+
+
+def test_client_llm_config_is_rejected_by_default(tmp_path: Path) -> None:
+    client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
+
+    response = client.post(
+        "/api/runs",
+        json={
+            "request": "analyze yield",
+            "data_path": str(DATA_PATH),
+            "llm": "open-model",
+            "base_url": "http://localhost:8000/v1",
+        },
+    )
+
+    assert response.status_code == 403
+    assert "Client LLM configuration is disabled" in response.json()["detail"]
+
+
+def test_client_llm_config_is_rejected_even_for_mock_runs(tmp_path: Path) -> None:
+    client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
+
+    response = client.post(
+        "/api/runs",
+        json={
+            "request": "analyze yield",
+            "data_path": str(DATA_PATH),
+            "api_key": "client-secret",
+        },
+    )
+
+    assert response.status_code == 403
+    assert "Client LLM configuration is disabled" in response.json()["detail"]
+
+
+def test_client_risk_approval_is_rejected_by_default(tmp_path: Path) -> None:
+    client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
+
+    response = client.post(
+        "/api/runs",
+        json={
+            "request": "analyze yield",
+            "data_path": str(DATA_PATH),
+            "approve_risks": ["external"],
+        },
+    )
+
+    assert response.status_code == 403
+    assert "Client risk approval is disabled" in response.json()["detail"]
+
+
+def test_open_model_runtime_failure_returns_502(tmp_path: Path, monkeypatch) -> None:
+    class FailingLLM:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def plan(self, user_request, tools, context):
+            raise RuntimeError("open-model unavailable")
+
+    monkeypatch.setattr("semicon_agent.server.api.OpenModelLLM", FailingLLM)
+    client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
+
+    response = client.post(
+        "/api/runs",
+        json={
+            "request": "analyze yield",
+            "data_path": str(DATA_PATH),
+            "llm": "open-model",
+        },
+    )
+
+    assert response.status_code == 502
+    assert "open-model unavailable" in response.json()["detail"]
 
 
 def test_index_renders_ui(tmp_path: Path) -> None:

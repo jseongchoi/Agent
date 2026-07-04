@@ -26,6 +26,8 @@ class ToolRegistry:
     def run(self, name: str, arguments: dict[str, object]) -> object:
         tool = self.get(name)
         validated = validate_arguments(tool.parameters, dict(arguments))
+        if any(field in validated for field in tool.path_fields):
+            raise PermissionError("Path-based tools must run through ToolRuntime so path policy is enforced.")
         return tool.run(validated)
 
 

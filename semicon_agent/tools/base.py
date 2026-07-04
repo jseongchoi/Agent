@@ -18,6 +18,7 @@ class ToolSpec:
     effects: tuple[str, ...] = ()
     requires_approval: bool = False
     data_access: tuple[str, ...] = ()
+    path_fields: tuple[str, ...] = ("path",)
 
     def run(self, arguments: dict[str, Any]) -> Any:
         return self.handler(**arguments)

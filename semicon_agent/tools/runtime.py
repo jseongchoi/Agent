@@ -29,8 +29,9 @@ class ToolRuntime:
 
         try:
             validated = validate_arguments(tool.parameters, arguments)
-            if "path" in validated:
-                validated["path"] = str(self.policy.resolve_data_path(str(validated["path"])))
+            for field in tool.path_fields:
+                if field in validated:
+                    validated[field] = str(self.policy.resolve_data_path(str(validated[field])))
         except (ToolValidationError, PermissionError, OSError) as exc:
             self.trace.emit("tool.validation_error", str(exc), tool=name, arguments=arguments)
             return ToolResult(name=name, arguments=dict(arguments), error=str(exc))

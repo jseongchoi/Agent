@@ -10,7 +10,7 @@ from semicon_agent.core.session import SQLiteRunStore
 from semicon_agent.llm.open_model import OpenModelLLM
 from semicon_agent.models import AgentPlan, ToolCall, ToolResult
 from semicon_agent.tools.base import ToolSpec
-from semicon_agent.tools.registry import ToolRegistry
+from semicon_agent.tools.registry import ToolRegistry, build_default_registry
 from semicon_agent.tools.validation import ToolValidationError, validate_arguments
 
 
@@ -54,6 +54,13 @@ def test_argument_validation_rejects_unknown_and_out_of_bounds_args() -> None:
         validate_arguments(schema, {"path": "data.csv", "max_examples": 1000})
 
 
+def test_registry_direct_run_rejects_path_based_tools() -> None:
+    registry = build_default_registry()
+
+    with pytest.raises(PermissionError):
+        registry.run("dataset_profile", {"path": str(DATA_PATH)})
+
+
 def test_agent_locks_tool_path_to_runtime_data_path() -> None:
     plan = AgentPlan(
         tool_calls=[
@@ -71,6 +78,39 @@ def test_agent_locks_tool_path_to_runtime_data_path() -> None:
     assert Path(run.tool_results[0].arguments["path"]).resolve() == DATA_PATH.resolve()
 
 
+def test_agent_locks_declared_path_fields_to_runtime_data_path() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="input_path_profile",
+            description="Fake tool with a nonstandard path field.",
+            parameters={
+                "type": "object",
+                "properties": {"input_path": {"type": "string"}},
+                "required": ["input_path"],
+                "additionalProperties": False,
+            },
+            handler=lambda input_path: {"input_path": input_path},
+            risk_level="read",
+            path_fields=("input_path",),
+        )
+    )
+    plan = AgentPlan(
+        tool_calls=[
+            ToolCall(
+                name="input_path_profile",
+                arguments={"input_path": "C:/Windows/System32/drivers/etc/hosts"},
+            )
+        ]
+    )
+    agent = SemiconductorAgent(llm=StaticLLM(plan), registry=registry)
+
+    run = agent.run("profile data", data_path=str(DATA_PATH))
+
+    assert run.tool_results[0].error is None
+    assert Path(run.tool_results[0].arguments["input_path"]).resolve() == DATA_PATH.resolve()
+
+
 def test_path_policy_rejects_paths_outside_allowed_roots(tmp_path: Path) -> None:
     outside = tmp_path.parent / "outside.csv"
     outside.write_text("a,b\n1,2\n", encoding="utf-8")
@@ -81,6 +121,13 @@ def test_path_policy_rejects_paths_outside_allowed_roots(tmp_path: Path) -> None
     run = agent.run("profile data")
 
     assert "outside allowed roots" in str(run.tool_results[0].error)
+
+
+def test_agent_rejects_invalid_max_steps() -> None:
+    agent = SemiconductorAgent(llm=StaticLLM(AgentPlan()))
+
+    with pytest.raises(ValueError):
+        agent.run("profile data", max_steps=0)
 
 
 def test_permission_policy_blocks_unapproved_destructive_tool() -> None:
@@ -118,9 +165,54 @@ def test_sqlite_run_store_persists_runs_and_events(tmp_path: Path) -> None:
     assert any(event["event_type"] == "run.end" for event in events)
 
 
+def test_failed_plan_is_persisted(tmp_path: Path) -> None:
+    class FailingPlanLLM:
+        def plan(self, user_request: str, tools: list[ToolSpec], context: dict[str, object]) -> AgentPlan:
+            raise RuntimeError("plan failed")
+
+        def synthesize(self, user_request: str, tool_results: list[ToolResult], context: dict[str, object]) -> str:
+            return "unused"
+
+    store = SQLiteRunStore(tmp_path / "runs.sqlite")
+    agent = SemiconductorAgent(llm=FailingPlanLLM(), run_store=store)
+
+    with pytest.raises(RuntimeError):
+        agent.run("yield")
+
+    runs = store.list_runs()
+    events = store.get_events(runs[0]["run_id"])
+    assert runs[0]["status"] == "failed"
+    assert "plan failed" in runs[0]["final_answer"]
+    assert any(event["event_type"] == "run.error" for event in events)
+
+
+def test_failed_synthesis_is_persisted(tmp_path: Path) -> None:
+    class FailingSynthesisLLM(StaticLLM):
+        def synthesize(self, user_request: str, tool_results: list[ToolResult], context: dict[str, object]) -> str:
+            raise RuntimeError("synthesis failed")
+
+    store = SQLiteRunStore(tmp_path / "runs.sqlite")
+    agent = SemiconductorAgent(
+        llm=FailingSynthesisLLM(AgentPlan(tool_calls=[ToolCall(name="yield_summary")])),
+        run_store=store,
+    )
+
+    with pytest.raises(RuntimeError):
+        agent.run("yield", data_path=str(DATA_PATH))
+
+    runs = store.list_runs()
+    events = store.get_events(runs[0]["run_id"])
+    assert runs[0]["status"] == "failed"
+    assert "synthesis failed" in runs[0]["final_answer"]
+    assert any(event["event_type"] == "tool.end" for event in events)
+    assert any(event["event_type"] == "run.error" for event in events)
+
+
 def test_open_model_endpoint_policy() -> None:
     OpenModelLLM(base_url="http://localhost:8000/v1", model="demo")
 
+    with pytest.raises(ValueError):
+        OpenModelLLM(base_url="file://localhost/v1", model="demo")
     with pytest.raises(ValueError):
         OpenModelLLM(base_url="http://example.com/v1", model="demo")
     with pytest.raises(ValueError):

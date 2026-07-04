@@ -66,6 +66,11 @@ class SQLiteRunStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def count_runs(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("select count(*) as count from runs").fetchone()
+        return int(row["count"])
+
     def get_events(self, run_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(

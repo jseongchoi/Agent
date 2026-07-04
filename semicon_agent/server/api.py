@@ -7,6 +7,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
+from semicon_agent.config import validate_max_steps
 from semicon_agent.core.agent import AgentRun, SemiconductorAgent
 from semicon_agent.core.artifacts import ArtifactStore
 from semicon_agent.core.policy import ExecutionPolicy, RiskLevel
@@ -14,13 +15,14 @@ from semicon_agent.core.session import SQLiteRunStore
 from semicon_agent.core.trace import redact
 from semicon_agent.llm.mock import MockLLM
 from semicon_agent.llm.open_model import OpenModelLLM
+from semicon_agent.tools.registry import build_default_registry
 
 
 class RunRequest(BaseModel):
     request: str = Field(min_length=1)
     data_path: str | None = None
     data_artifact: str | None = None
-    llm: Literal["mock", "open-model"] = "mock"
+    llm: Literal["mock", "open-model"] | None = None
     base_url: str = "http://localhost:8000/v1"
     model: str = "open-model"
     api_key: str | None = None
@@ -34,15 +36,45 @@ def create_app(
     session_db: str | Path = ".semicon_agent/runs.sqlite",
     artifact_root: str | Path = ".semicon_agent/artifacts",
     allowed_roots: tuple[str | Path, ...] | None = None,
+    default_llm: Literal["mock", "open-model"] = "mock",
+    open_model_base_url: str = "http://localhost:8000/v1",
+    open_model_name: str = "open-model",
+    open_model_api_key: str | None = None,
+    allow_remote_llm: bool = False,
+    allow_client_llm_config: bool = False,
+    allow_client_risk_approval: bool = False,
+    debug_status: bool = False,
 ) -> FastAPI:
     app = FastAPI(title="Semicon Agent", version="0.1.0")
     run_store = SQLiteRunStore(session_db)
     artifact_store = ArtifactStore(artifact_root)
-    server_allowed_roots = tuple(Path(root).expanduser().resolve() for root in (allowed_roots or (Path.cwd(), artifact_store.root)))
+    server_allowed_roots = _server_allowed_roots(allowed_roots, artifact_store.root)
+    registry = build_default_registry()
 
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/status")
+    def status() -> dict[str, object]:
+        payload = {
+            "status": "ok",
+            "version": app.version,
+            "tool_count": len(registry.list()),
+            "tools": [tool.name for tool in registry.list()],
+            "artifact_count": len(artifact_store.list_artifacts()),
+            "run_count": run_store.count_runs(),
+            "default_llm": default_llm,
+        }
+        if debug_status:
+            payload.update(
+                {
+                    "session_db": str(Path(session_db).expanduser().resolve()),
+                    "artifact_root": str(artifact_store.root.resolve()),
+                    "allowed_roots": [str(root) for root in server_allowed_roots],
+                }
+            )
+        return payload
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
@@ -51,19 +83,32 @@ def create_app(
     @app.post("/api/runs")
     def create_run(request: RunRequest) -> dict[str, object]:
         try:
+            validate_max_steps(request.max_steps)
             data_path = _resolve_run_data_path(request, artifact_store, server_allowed_roots)
-            llm = _build_llm(request)
+            llm = _build_llm(
+                request,
+                default_llm=default_llm,
+                open_model_base_url=open_model_base_url,
+                open_model_name=open_model_name,
+                open_model_api_key=open_model_api_key,
+                allow_remote_llm=allow_remote_llm,
+                allow_client_llm_config=allow_client_llm_config,
+            )
+            policy = _build_policy(request, server_allowed_roots, allow_client_risk_approval=allow_client_risk_approval)
         except (ValueError, PermissionError, FileNotFoundError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        policy = _build_policy(request, server_allowed_roots)
+            status_code = 403 if isinstance(exc, PermissionError) else 400
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
         agent = SemiconductorAgent(llm=llm, policy=policy, run_store=run_store)
-        run = agent.run(
-            request.request,
-            data_path=str(data_path) if data_path else None,
-            approved_risks=set(request.approve_risks),
-            max_steps=request.max_steps,
-            stream=request.stream,
-        )
+        try:
+            run = agent.run(
+                request.request,
+                data_path=str(data_path) if data_path else None,
+                approved_risks=set(request.approve_risks),
+                max_steps=request.max_steps,
+                stream=request.stream,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
         artifact_name = artifact_store.save_text(f"reports/{run.run_id}.md", run.final_answer)
         payload = _run_payload(run)
         payload["artifact"] = artifact_name
@@ -108,21 +153,50 @@ def create_app(
     return app
 
 
-def _build_llm(request: RunRequest):
-    if request.llm == "open-model":
+def _build_llm(
+    request: RunRequest,
+    default_llm: Literal["mock", "open-model"],
+    open_model_base_url: str,
+    open_model_name: str,
+    open_model_api_key: str | None,
+    allow_remote_llm: bool,
+    allow_client_llm_config: bool,
+):
+    llm_name = request.llm or default_llm
+    client_fields = {"base_url", "model", "api_key", "allow_remote_llm"} & request.model_fields_set
+    if client_fields and not allow_client_llm_config:
+        raise PermissionError("Client LLM configuration is disabled on this server.")
+    if llm_name == "open-model":
+        base_url = request.base_url if allow_client_llm_config else open_model_base_url
+        model = request.model if allow_client_llm_config else open_model_name
+        api_key = request.api_key if allow_client_llm_config else open_model_api_key
+        allow_remote = request.allow_remote_llm if allow_client_llm_config else allow_remote_llm
         return OpenModelLLM(
-            base_url=request.base_url,
-            model=request.model,
-            api_key=request.api_key,
-            allow_remote=request.allow_remote_llm,
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            allow_remote=allow_remote,
         )
     return MockLLM()
 
 
-def _build_policy(request: RunRequest, allowed_roots: tuple[Path, ...]) -> ExecutionPolicy:
+def _build_policy(
+    request: RunRequest,
+    allowed_roots: tuple[Path, ...],
+    allow_client_risk_approval: bool,
+) -> ExecutionPolicy:
+    if request.approve_risks and not allow_client_risk_approval:
+        raise PermissionError("Client risk approval is disabled on this server.")
     roots = list(allowed_roots)
-    approved = {"safe", "read", *request.approve_risks}
+    approved = {"safe", "read", *(request.approve_risks if allow_client_risk_approval else [])}
     return ExecutionPolicy(approved_risks=frozenset(approved), allowed_roots=tuple(roots))
+
+
+def _server_allowed_roots(allowed_roots: tuple[str | Path, ...] | None, artifact_root: Path) -> tuple[Path, ...]:
+    base_roots = allowed_roots if allowed_roots is not None else (Path.cwd(),)
+    roots = [Path(root).expanduser().resolve() for root in base_roots]
+    roots.append(artifact_root.expanduser().resolve())
+    return tuple(dict.fromkeys(roots))
 
 
 def _resolve_run_data_path(

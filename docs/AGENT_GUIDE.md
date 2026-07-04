@@ -33,11 +33,15 @@ Python으로 구성하는 것이다.
 - `ApprovalProvider`: risky tool 실행 전 승인 workflow
 - `TraceRecorder`: redacted run event 기록
 - `SQLiteRunStore`: run/session history 저장
+- `AgentSettings`: CLI/server 공통 환경 설정
+- `ArtifactStore`: upload/report/self-check artifact 저장
 - `StreamingLLM`: streaming-ready synthesis provider protocol
 - FastAPI server: `semicon_agent/server/api.py`
 - Web UI: `GET /`
+- API status: `GET /api/status`
 - `semiconductor.py`: profile, yield, SPC, anomaly, correlation, report demo tools
 - CLI: `python -m semicon_agent`
+- self-check: `python -m semicon_agent.self_check`
 - tests: pytest 기반 기본 회귀 테스트
 
 아직 구현하지 않은 주요 항목은 다음과 같다.
@@ -45,6 +49,8 @@ Python으로 구성하는 것이다.
 - workflow graph executor
 - tracing dashboard
 - RAG/document ingestion
+- background worker / async job queue
+- auth boundary
 - production semiconductor analytics
 
 ## 3. 아키텍처
@@ -237,6 +243,7 @@ result = tool.run({"path": "examples/sample_wafer.csv"})
 - arguments는 schema로 검증한다.
 - 위험한 tool은 human approval을 요구한다.
 - 파일 경로는 허용된 workspace 안인지 확인한다.
+- path 기반 tool은 `ToolRegistry.run()`으로 직접 실행하지 않고 `ToolRuntime`을 거친다.
 
 현재 `semicon-agent`는 MVP라서 schema validation과 permission layer가 약하다.
 풀패키지로 만들려면 이 부분을 먼저 강화해야 한다.
@@ -603,6 +610,8 @@ flowchart TD
 session/run store, permission policy, tracing/logging은 core v1에 들어갔다. core v2에는
 bounded multi-step orchestration, approval provider, streaming-ready interface가 들어갔다.
 core v3에는 FastAPI server, simple web UI, artifact upload/report store가 들어갔다.
+core v4 보강에는 공통 설정, serverless self-check, 실패 run persistence, API status,
+client-side LLM/risk config guard, path field policy가 들어갔다.
 
 ### 3-1-16. Semicon Agent에 적용할 설계 방향
 
@@ -610,9 +619,12 @@ core v3에는 FastAPI server, simple web UI, artifact upload/report store가 들
 
 ```text
 semicon_agent/
+  config.py               # shared runtime settings
+  self_check.py           # serverless end-to-end verification
   core/
     agent.py              # orchestrator
     approval.py           # human/programmatic approvals
+    artifacts.py          # saved uploads/reports/check artifacts
     session.py            # run/session state
     policy.py             # permission rules
     trace.py              # event logging
@@ -647,6 +659,7 @@ semicon_agent/
 6. streaming 가능한 LLM provider interface
 7. FastAPI endpoint 추가 - core v3 완료
 8. 간단한 web UI 추가 - core v3 완료
+9. serverless self-check와 API guard 추가 - core v4 보강 완료
 
 반도체 분석 함수 자체는 나중 문제다. 중요한 것은 agent platform이 안전하고
 관찰 가능하며 교체 가능해야 한다는 점이다.
@@ -707,6 +720,10 @@ python -m pip install -e ".[dev]"
 
 - pytest
 - openpyxl
+- fastapi
+- uvicorn
+- httpx
+- python-multipart
 
 ## 5. 실행
 
@@ -751,7 +768,76 @@ python -m semicon_agent "run approved task" --approve-risk external
 
 모든 risk level을 승인하는 `--yes`는 개발/테스트 상황에서만 사용한다.
 
-## 6. Open-model API 연결
+서버 없이 end-to-end 상태를 확인하려면 self-check를 실행한다.
+
+```powershell
+python -m semicon_agent.self_check --data examples/sample_wafer.csv
+```
+
+editable install 후에는 console script도 사용할 수 있다.
+
+```powershell
+semicon-agent-check --data examples/sample_wafer.csv
+```
+
+self-check는 `MockLLM`, agent loop, tool execution, SQLite run store, artifact store가
+같이 동작하는지 확인한다. 서버를 띄우지 않고 CI smoke test로 쓰기 좋다.
+
+## 6. API server와 설정
+
+로컬 API server와 Web UI는 다음처럼 실행한다.
+
+```powershell
+python -m semicon_agent.server --host 127.0.0.1 --port 8008 --allow-root examples
+```
+
+주요 endpoint는 다음과 같다.
+
+| Endpoint | 역할 |
+| --- | --- |
+| `GET /health` | 최소 health check |
+| `GET /api/status` | tool 수, artifact 수, run 수 같은 runtime 상태 |
+| `GET /` | 간단한 Web UI |
+| `POST /api/artifacts` | CSV/Excel 등 데이터 업로드 |
+| `GET /api/artifacts` | artifact 목록 |
+| `GET /api/artifacts/{name}` | artifact 다운로드 |
+| `POST /api/runs` | agent 실행 |
+| `GET /api/runs` | 최근 run 목록 |
+| `GET /api/runs/{run_id}/trace` | 저장된 trace event |
+
+API server의 기본 정책은 local-first다.
+
+- 클라이언트가 `base_url`, `api_key`, `allow_remote_llm`을 직접 넘기는 것은 기본 차단한다.
+- 클라이언트가 `approve_risks`로 risk approval을 직접 여는 것도 기본 차단한다.
+- `/api/status`는 기본적으로 절대 경로를 숨긴다.
+- 상세 경로 상태는 `--debug-status`를 명시한 경우에만 노출한다.
+
+운영자가 의도적으로 client-side LLM 설정을 허용하려면 다음 flag를 명시한다.
+
+```powershell
+python -m semicon_agent.server --allow-client-llm-config
+```
+
+운영자가 의도적으로 client-side risk approval을 허용하려면 다음 flag를 명시한다.
+
+```powershell
+python -m semicon_agent.server --allow-client-risk-approval
+```
+
+공통 환경 변수는 다음과 같다.
+
+| 변수 | 역할 |
+| --- | --- |
+| `SEMICON_AGENT_SESSION_DB` | SQLite run/session DB path |
+| `SEMICON_AGENT_ARTIFACT_ROOT` | artifact 저장 root |
+| `SEMICON_AGENT_ALLOWED_ROOTS` | 추가 data root 목록. OS path separator로 구분 |
+| `SEMICON_AGENT_MAX_STEPS` | 기본 max plan/act step |
+| `SEMICON_AGENT_ALLOW_REMOTE_LLM` | 서버 측 remote LLM 허용 여부 |
+| `OPEN_MODEL_BASE_URL` | open-model API base URL |
+| `OPEN_MODEL_NAME` | open-model model name |
+| `OPEN_MODEL_API_KEY` | open-model API key |
+
+## 7. Open-model API 연결
 
 `OpenModelLLM`은 OpenAI-compatible chat completions API를 가정한다.
 
@@ -783,7 +869,15 @@ $env:OPEN_MODEL_API_KEY="..."
 localhost가 아닌 endpoint는 HTTPS여야 하며, CLI에서 `--allow-remote-llm`을 명시해야
 한다. 기본값은 외부 endpoint 차단이다.
 
-## 7. 주요 코드 위치
+서버에서 server-side open-model profile을 사용하려면 다음처럼 설정한다.
+
+```powershell
+$env:OPEN_MODEL_BASE_URL="http://localhost:8000/v1"
+$env:OPEN_MODEL_NAME="my-open-model"
+python -m semicon_agent.server --default-llm open-model
+```
+
+## 8. 주요 코드 위치
 
 | 영역 | 파일 |
 | --- | --- |
@@ -792,6 +886,7 @@ localhost가 아닌 endpoint는 HTTPS여야 하며, CLI에서 `--allow-remote-ll
 | Execution policy | `semicon_agent/core/policy.py` |
 | Trace events | `semicon_agent/core/trace.py` |
 | SQLite run store | `semicon_agent/core/session.py` |
+| 설정 | `semicon_agent/config.py` |
 | 실행 모델 | `semicon_agent/models.py` |
 | LLM protocol | `semicon_agent/llm/base.py` |
 | Mock LLM | `semicon_agent/llm/mock.py` |
@@ -805,9 +900,10 @@ localhost가 아닌 endpoint는 HTTPS여야 하며, CLI에서 `--allow-remote-ll
 | FastAPI server | `semicon_agent/server/api.py` |
 | Server runner | `semicon_agent/server/__main__.py` |
 | Artifact store | `semicon_agent/core/artifacts.py` |
+| Self-check | `semicon_agent/self_check.py` |
 | Tests | `tests/` |
 
-## 8. Agent 실행 흐름
+## 9. Agent 실행 흐름
 
 1. 사용자가 자연어 요청을 입력한다.
 2. `SemiconductorAgent.run()`이 context를 만든다.
@@ -823,7 +919,7 @@ localhost가 아닌 endpoint는 HTTPS여야 하며, CLI에서 `--allow-remote-ll
 현재 `MockLLM`은 keyword 기반으로 tool을 선택한다. 실제 LLM을 연결하면 모델이
 tool 설명과 schema를 보고 tool call 계획을 생성한다.
 
-## 9. Tool 추가 방법
+## 10. Tool 추가 방법
 
 새 tool은 다음 순서로 추가한다.
 
@@ -861,7 +957,39 @@ ToolSpec(
 )
 ```
 
-## 10. LLM adapter 추가 방법
+## 11. 입력 데이터 계약
+
+현재 demo tool이 기대하는 입력 데이터는 table 형태다.
+
+지원하는 파일 형식은 다음과 같다.
+
+- `.csv`
+- `.tsv`
+- `.txt`
+- `.xlsx`
+- `.xls`
+
+역할 추정에 사용하는 대표 column 이름은 다음과 같다.
+
+| 역할 | 후보 column |
+| --- | --- |
+| lot | `lot_id`, `lot`, `batch` |
+| wafer | `wafer_id`, `wafer` |
+| bin | `hard_bin`, `soft_bin`, `bin` |
+| pass/fail | `is_pass`, `pass`, `result`, `status` |
+
+pass/fail 판정 규칙은 다음 순서로 적용된다.
+
+1. `is_pass`, `pass`, `result`, `status` 중 하나가 있으면 그 column을 사용한다.
+2. boolean column이면 `True`를 pass로 본다.
+3. numeric column이면 `0`이 아닌 값을 pass로 본다.
+4. string column이면 `pass`, `passed`, `ok`, `good`, `true`, `1`, `y`, `yes`를 pass로 본다.
+5. pass/fail column이 없고 `hard_bin`, `soft_bin`, `bin`이 있으면 `bin == 1`을 pass로 본다.
+
+측정 column은 numeric column 중 ID, 좌표, bin, pass/fail로 보이는 이름을 제외하고
+선택한다. 실제 업무 적용에서는 이 규칙을 공정/제품별 schema로 교체해야 한다.
+
+## 12. LLM adapter 추가 방법
 
 새 provider를 붙이려면 `BaseLLM` protocol을 만족하면 된다.
 
@@ -884,7 +1012,7 @@ provider별 구현 예시는 다음과 같이 분리하는 것이 좋다.
 
 CLI에는 `--llm` 선택지를 추가한다.
 
-## 11. 테스트
+## 13. 테스트
 
 전체 테스트:
 
@@ -903,13 +1031,21 @@ python -m pytest -p no:cacheprovider
 
 - profile tool이 데이터 구조를 읽는지
 - yield tool이 pass/fail을 계산하는지
+- yield tool이 `hard_bin == 1`과 string `status` alias를 처리하는지
 - SPC demo tool이 기본 통계를 반환하는지
 - anomaly demo tool이 이상치를 반환하는지
 - correlation demo tool이 상관값을 반환하는지
 - mock agent가 적절한 tool을 선택하는지
 - report tool이 markdown을 생성하는지
+- max step validation이 core/API 양쪽에서 적용되는지
+- path 기반 tool이 `ToolRegistry.run()`으로 policy 없이 직접 실행되지 않는지
+- LLM planning/synthesis 실패가 SQLite에 `failed` 상태로 저장되는지
+- artifact path escape와 unsupported upload가 거부되는지
+- API status, upload, run, trace, artifact download가 동작하는지
+- client-side LLM config와 risk approval이 기본 차단되는지
+- serverless self-check가 end-to-end로 동작하는지
 
-## 12. 풀패키지 확장 로드맵
+## 14. 풀패키지 확장 로드맵
 
 최신 Agent platform 수준으로 확장하려면 다음 순서가 현실적이다.
 
@@ -917,6 +1053,8 @@ python -m pytest -p no:cacheprovider
 
 - structured plan schema 강화
 - tool argument validation 강화 - core v1 완료
+- max step validation - core v4 보강 완료
+- LLM failure persistence - core v4 보강 완료
 - error taxonomy 추가
 - run history 저장 - core v1 완료
 - CLI command 분리
@@ -933,8 +1071,9 @@ python -m pytest -p no:cacheprovider
 ### Phase 3. Memory and artifacts
 
 - SQLite run store - core v1 완료
-- artifact directory
-- uploaded dataset registry
+- artifact directory - core v3 완료
+- uploaded dataset registry - core v3 기본 upload 완료
+- self-check artifact - core v4 보강 완료
 - previous analysis context retrieval
 
 ### Phase 4. Workflow engine
@@ -950,6 +1089,8 @@ python -m pytest -p no:cacheprovider
 - FastAPI server - core v3 완료
 - simple web UI - core v3 완료
 - upload/report artifact store - core v3 완료
+- API status endpoint - core v4 보강 완료
+- client LLM/risk config guard - core v4 보강 완료
 - background worker
 - auth boundary
 - audit log
@@ -965,9 +1106,10 @@ python -m pytest -p no:cacheprovider
 - SPC chart data
 - recipe/process comparison
 
-현재 repository는 Phase 0/MVP에 해당한다.
+현재 repository는 core v4 prototype에 해당한다. Agent runtime의 기본 골격, API/UI,
+artifact, self-check, 보안 기본값은 들어갔지만 production platform은 아니다.
 
-## 13. 운영 기준
+## 15. 운영 기준
 
 production으로 확장할 때는 다음 기준을 적용한다.
 
@@ -979,7 +1121,7 @@ production으로 확장할 때는 다음 기준을 적용한다.
 - 분석 함수는 LLM 없이도 단독 테스트 가능해야 한다.
 - 민감 데이터가 있으면 local model 또는 사내 API boundary를 우선한다.
 
-## 14. 현재 한계
+## 16. 현재 한계
 
 현재 구현은 다음을 보장하지 않는다.
 
