@@ -117,6 +117,9 @@ python -m pip install -e ".[dev]"
 - `-e`: editable install. 코드를 수정하면 재설치 없이 바로 반영된다.
 - `.[dev]`: 기본 dependency와 개발/test/web dependency를 함께 설치한다.
 
+단, `pyproject.toml`의 dependency나 console script가 바뀐 경우에는 editable install이라도
+다시 설치해야 한다.
+
 설치 후 정상 동작을 확인하려면 다음을 실행한다.
 
 ```powershell
@@ -684,10 +687,11 @@ row limit, file size limit, parser timeout, content sniffing을 추가해야 한
 1. `README.md`: 프로젝트가 무엇인지 빠르게 본다.
 2. `docs/BEGINNER_GUIDE.md`: 설치, 실행, 내부 흐름을 따라간다.
 3. `docs/AGENT_GUIDE.md`: agent 원리, Codex/Claude Code와의 관계, 장기 설계를 읽는다.
-4. `tests/`: 실제로 무엇을 보장하는지 확인한다.
-5. `semicon_agent/tools/semiconductor.py`: 반도체 분석 함수 확장 지점을 확인한다.
-6. `semicon_agent/core/agent.py`: agent loop를 이해한다.
-7. `semicon_agent/server/api.py`: API/UI 사용 흐름을 이해한다.
+4. `docs/IMPROVEMENT_AUDIT.md`: 검증된 항목과 남은 개선 backlog를 확인한다.
+5. `tests/`: 실제로 무엇을 보장하는지 확인한다.
+6. `semicon_agent/tools/semiconductor.py`: 반도체 분석 함수 확장 지점을 확인한다.
+7. `semicon_agent/core/agent.py`: agent loop를 이해한다.
+8. `semicon_agent/server/api.py`: API/UI 사용 흐름을 이해한다.
 
 이 순서대로 보면 프로젝트를 처음 보는 사람도 "어떻게 실행하고, 어디를 고치고, 어떤
 한계가 있는지"를 파악할 수 있다.

@@ -1,9 +1,12 @@
 from pathlib import Path
 
+import pandas as pd
+
 from semicon_agent.tools.semiconductor import (
     anomaly_scan,
     correlation_scan,
     dataset_profile,
+    load_table,
     spc_summary,
     yield_summary,
 )
@@ -18,6 +21,21 @@ def test_dataset_profile_detects_measurement_columns() -> None:
     assert profile["row_count"] == 16
     assert "param_vth" in profile["measurement_columns"]
     assert profile["role_guess"]["wafer"] == "wafer_id"
+
+
+def test_load_table_supports_xlsx(tmp_path: Path) -> None:
+    data = tmp_path / "sample.xlsx"
+    pd.DataFrame(
+        [
+            {"wafer_id": "W01", "is_pass": True, "param": 1.0},
+            {"wafer_id": "W01", "is_pass": False, "param": 2.0},
+        ]
+    ).to_excel(data, index=False)
+
+    loaded = load_table(str(data))
+
+    assert list(loaded.columns) == ["wafer_id", "is_pass", "param"]
+    assert len(loaded) == 2
 
 
 def test_yield_summary_overall_and_by_wafer() -> None:

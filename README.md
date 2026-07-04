@@ -42,6 +42,9 @@ future open-model APIs.
 python -m pip install -e ".[dev]"
 ```
 
+Re-run this install command after dependency or console-script changes in
+`pyproject.toml`.
+
 ## Quick Start
 
 ```powershell
@@ -60,6 +63,7 @@ Recommended reading order:
 
 1. [`docs/BEGINNER_GUIDE.md`](docs/BEGINNER_GUIDE.md): first-time setup, concepts, commands, code tour, troubleshooting.
 2. [`docs/AGENT_GUIDE.md`](docs/AGENT_GUIDE.md): deeper architecture, coding-agent internals, extension roadmap.
+3. [`docs/IMPROVEMENT_AUDIT.md`](docs/IMPROVEMENT_AUDIT.md): verified checks, fixed gaps, remaining backlog.
 
 For a full report:
 

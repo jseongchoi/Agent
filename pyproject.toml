@@ -8,6 +8,7 @@ dependencies = [
     "numpy>=1.26",
     "pandas>=2.0",
     "pydantic>=2.0",
+    "xlrd>=2.0",
 ]
 
 [project.optional-dependencies]

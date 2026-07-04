@@ -7,6 +7,8 @@
 처음 보는 사람은 이 문서부터 바로 읽기보다
 [`BEGINNER_GUIDE.md`](BEGINNER_GUIDE.md)를 먼저 읽는 것이 좋다. 입문 문서는 설치,
 첫 실행, sample data, CLI/API 사용법, 코드 읽는 순서, 문제 해결을 단계적으로 설명한다.
+검증 결과와 남은 개선 backlog는 [`IMPROVEMENT_AUDIT.md`](IMPROVEMENT_AUDIT.md)에
+정리되어 있다.
 
 ## 1. 목적
 

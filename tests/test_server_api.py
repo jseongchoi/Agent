@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 from fastapi.testclient import TestClient
 
 from semicon_agent.server.api import create_app
@@ -101,6 +102,36 @@ def test_upload_then_run_with_artifact(tmp_path: Path) -> None:
 
     assert run.status_code == 200
     assert "Yield: 75.00%" in run.json()["final_answer"]
+
+
+def test_upload_xlsx_then_run_with_artifact(tmp_path: Path) -> None:
+    client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
+    data = tmp_path / "sample.xlsx"
+    pd.DataFrame(
+        [
+            {"wafer_id": "W01", "is_pass": True, "param": 1.0},
+            {"wafer_id": "W01", "is_pass": False, "param": 2.0},
+            {"wafer_id": "W02", "is_pass": True, "param": 3.0},
+        ]
+    ).to_excel(data, index=False)
+
+    upload = client.post(
+        "/api/artifacts",
+        files={"file": ("sample.xlsx", data.read_bytes(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+
+    assert upload.status_code == 200
+    run = client.post(
+        "/api/runs",
+        json={
+            "request": "analyze yield",
+            "data_artifact": upload.json()["name"],
+            "max_steps": 3,
+        },
+    )
+
+    assert run.status_code == 200
+    assert "Yield: 66.67%" in run.json()["final_answer"]
 
 
 def test_run_rejects_data_path_outside_allowed_roots(tmp_path: Path) -> None:
