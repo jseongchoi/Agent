@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from semicon_agent.core.agent import AgentRun, SemiconductorAgent
+from semicon_agent.core.approval import AutoApprovalProvider, ConsoleApprovalProvider
 from semicon_agent.core.policy import ExecutionPolicy
 from semicon_agent.core.session import SQLiteRunStore
 from semicon_agent.core.trace import redact
@@ -31,6 +32,9 @@ def main() -> None:
         help="Approve a tool risk level for this run.",
     )
     parser.add_argument("--yes", action="store_true", help="Approve all tool risk levels for this run.")
+    parser.add_argument("--interactive-approval", action="store_true", help="Prompt before running tools that require approval.")
+    parser.add_argument("--max-steps", type=int, default=3, help="Maximum plan/act loop steps.")
+    parser.add_argument("--stream", action="store_true", help="Use streaming-ready synthesis path.")
     parser.add_argument("--session-db", default=".semicon_agent/runs.sqlite", help="SQLite run/session database path.")
     parser.add_argument("--list-runs", action="store_true", help="List recent persisted runs and exit.")
     parser.add_argument("--show-trace", help="Print persisted trace events for a run id and exit.")
@@ -61,8 +65,17 @@ def main() -> None:
     approved = {"safe", "read", "write", "external", "destructive"} if args.yes else {"safe", "read", *args.approve_risk}
     allowed_roots = tuple(Path(root).expanduser().resolve() for root in [Path.cwd(), *args.allow_root])
     policy = ExecutionPolicy(approved_risks=frozenset(approved), allowed_roots=allowed_roots)
+    approval_provider = AutoApprovalProvider() if args.yes else None
+    if args.interactive_approval:
+        approval_provider = ConsoleApprovalProvider()
     agent = SemiconductorAgent(llm=llm, policy=policy, run_store=run_store)
-    run = agent.run(args.request, data_path=args.data)
+    run = agent.run(
+        args.request,
+        data_path=args.data,
+        approval_provider=approval_provider,
+        max_steps=args.max_steps,
+        stream=args.stream,
+    )
 
     if args.json or args.unsafe_json:
         print(json.dumps(_run_payload(run, redact_payload=not args.unsafe_json), indent=2, ensure_ascii=False, default=str))
@@ -76,9 +89,12 @@ def _run_payload(run: AgentRun, redact_payload: bool = True) -> dict[str, object
         "run_id": run.run_id,
         "request": run.request,
         "plan": run.plan.model_dump(),
+        "plans": [plan.model_dump() for plan in run.plans],
         "tool_results": [result.model_dump() for result in run.tool_results],
         "final_answer": run.final_answer,
         "events": [event.to_dict() for event in run.events],
+        "step_count": run.step_count,
+        "stop_reason": run.stop_reason,
     }
     return redact(payload) if redact_payload else payload
 

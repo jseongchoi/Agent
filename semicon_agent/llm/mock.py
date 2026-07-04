@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from semicon_agent.models import AgentPlan, ToolCall, ToolResult
+from collections.abc import Iterator
+
+from semicon_agent.models import AgentPlan, LLMStreamChunk, ToolCall, ToolResult
 from semicon_agent.tools.base import ToolSpec
 
 
@@ -15,6 +17,7 @@ class MockLLM:
     ) -> AgentPlan:
         text = user_request.lower()
         data_path = context.get("data_path")
+        completed_tools = set(context.get("completed_tools", []))
         if not data_path:
             return AgentPlan(
                 reasoning="No data path was provided.",
@@ -32,18 +35,25 @@ class MockLLM:
 
         path_arg = {"path": str(data_path)}
         if wants_report:
-            calls.append(ToolCall(name="make_semiconductor_report", arguments=path_arg))
+            if "make_semiconductor_report" not in completed_tools:
+                calls.append(ToolCall(name="make_semiconductor_report", arguments=path_arg))
         else:
-            if wants_profile or not any([wants_yield, wants_spc, wants_anomaly, wants_corr]):
+            if (wants_profile or not any([wants_yield, wants_spc, wants_anomaly, wants_corr])) and "dataset_profile" not in completed_tools:
                 calls.append(ToolCall(name="dataset_profile", arguments=path_arg))
-            if wants_yield:
+            if wants_yield and "yield_summary" not in completed_tools:
                 calls.append(ToolCall(name="yield_summary", arguments=path_arg))
-            if wants_spc:
+            if wants_spc and "spc_summary" not in completed_tools:
                 calls.append(ToolCall(name="spc_summary", arguments=path_arg))
-            if wants_anomaly:
+            if wants_anomaly and "anomaly_scan" not in completed_tools:
                 calls.append(ToolCall(name="anomaly_scan", arguments=path_arg))
-            if wants_corr:
+            if wants_corr and "correlation_scan" not in completed_tools:
                 calls.append(ToolCall(name="correlation_scan", arguments=path_arg))
+
+        if not calls and completed_tools:
+            return AgentPlan(
+                reasoning="All selected mock tools have already run.",
+                final_answer="Tool execution is complete.",
+            )
 
         return AgentPlan(
             reasoning="Mock planning selected semiconductor analysis tools by keyword.",
@@ -124,3 +134,12 @@ class MockLLM:
         if kind == "markdown_report":
             return [output["markdown"]]
         return [str(output)]
+
+    def stream_synthesize(
+        self,
+        user_request: str,
+        tool_results: list[ToolResult],
+        context: dict[str, object],
+    ) -> Iterator[LLMStreamChunk]:
+        yield LLMStreamChunk(content=self.synthesize(user_request, tool_results, context), done=False)
+        yield LLMStreamChunk(done=True, event="done")

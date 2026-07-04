@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from semicon_agent.core.approval import ApprovalProvider, ApprovalRequest, DenyApprovalProvider
 from semicon_agent.core.policy import ExecutionPolicy
 from semicon_agent.core.trace import TraceRecorder
 from semicon_agent.models import ToolResult
@@ -16,6 +17,7 @@ class ToolRuntime:
     registry: ToolRegistry
     policy: ExecutionPolicy
     trace: TraceRecorder
+    approval_provider: ApprovalProvider | None = None
 
     def run(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         started = time.perf_counter()
@@ -25,12 +27,6 @@ class ToolRuntime:
             self.trace.emit("tool.error", "Unknown tool requested.", tool=name, error=str(exc))
             return ToolResult(name=name, arguments=dict(arguments), error=str(exc))
 
-        self.trace.emit("tool.policy", "Evaluating tool policy.", tool=name, risk_level=tool.risk_level)
-        decision = self.policy.evaluate_tool(tool)
-        if not decision.allowed:
-            self.trace.emit("tool.denied", decision.reason, tool=name, decision=decision.action)
-            return ToolResult(name=name, arguments=dict(arguments), error=decision.reason)
-
         try:
             validated = validate_arguments(tool.parameters, arguments)
             if "path" in validated:
@@ -38,6 +34,35 @@ class ToolRuntime:
         except (ToolValidationError, PermissionError, OSError) as exc:
             self.trace.emit("tool.validation_error", str(exc), tool=name, arguments=arguments)
             return ToolResult(name=name, arguments=dict(arguments), error=str(exc))
+
+        self.trace.emit("tool.policy", "Evaluating tool policy.", tool=name, risk_level=tool.risk_level)
+        decision = self.policy.evaluate_tool(tool)
+        if not decision.allowed:
+            if decision.action == "requires_approval":
+                provider = self.approval_provider or DenyApprovalProvider()
+                self.trace.emit("tool.approval_required", decision.reason, tool=name, risk_level=tool.risk_level)
+                approval = provider.request_approval(
+                    ApprovalRequest(
+                        tool_name=name,
+                        risk_level=tool.risk_level,
+                        reason=decision.reason,
+                        arguments=dict(validated),
+                    )
+                )
+                self.trace.emit(
+                    "tool.approval_result",
+                    approval.reason,
+                    tool=name,
+                    approved=approval.approved,
+                )
+                if approval.approved:
+                    decision = self.policy.approve_tool(tool)
+                else:
+                    return ToolResult(name=name, arguments=validated, error=approval.reason)
+
+            if not decision.allowed:
+                self.trace.emit("tool.denied", decision.reason, tool=name, decision=decision.action)
+                return ToolResult(name=name, arguments=validated, error=decision.reason)
 
         self.trace.emit("tool.start", "Starting tool execution.", tool=name, arguments=validated)
         try:

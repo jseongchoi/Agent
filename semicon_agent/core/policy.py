@@ -40,6 +40,9 @@ class ExecutionPolicy:
             )
         return PolicyDecision("allow", f"Tool '{tool.name}' is allowed.")
 
+    def approve_tool(self, tool: ToolSpec) -> PolicyDecision:
+        return PolicyDecision("allow", f"Tool '{tool.name}' was approved for this execution.")
+
     def resolve_data_path(self, raw_path: str) -> Path:
         if raw_path.startswith("~"):
             raise PermissionError("Home-directory paths are not allowed in tool arguments.")

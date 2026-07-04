@@ -30,16 +30,16 @@ Python으로 구성하는 것이다.
 - `ToolRegistry`: Python 함수를 tool로 등록하고 실행
 - `ToolRuntime`: argument validation, path policy, permission policy 적용
 - `ExecutionPolicy`: tool risk와 data path boundary 관리
+- `ApprovalProvider`: risky tool 실행 전 승인 workflow
 - `TraceRecorder`: redacted run event 기록
 - `SQLiteRunStore`: run/session history 저장
+- `StreamingLLM`: streaming-ready synthesis provider protocol
 - `semiconductor.py`: profile, yield, SPC, anomaly, correlation, report demo tools
 - CLI: `python -m semicon_agent`
 - tests: pytest 기반 기본 회귀 테스트
 
 아직 구현하지 않은 주요 항목은 다음과 같다.
 
-- streaming response
-- human approval workflow
 - workflow graph executor
 - tracing dashboard
 - FastAPI server
@@ -596,12 +596,12 @@ flowchart TD
 따라서 다음 단계에서 "Codex/Claude Code 같은 구조"에 더 가까워지려면 다음 세 가지가
 우선이다.
 
-1. multi-step orchestration loop
-2. human approval workflow
-3. streaming/provider layer 분리
+1. workflow graph executor
+2. provider별 true streaming 구현
+3. FastAPI/UI boundary
 
-session/run store, permission policy, tracing/logging은 core v1에 들어갔다. 아직은
-단일 plan 실행 구조이므로 장기 작업을 하려면 orchestration loop를 확장해야 한다.
+session/run store, permission policy, tracing/logging은 core v1에 들어갔다. core v2에는
+bounded multi-step orchestration, approval provider, streaming-ready interface가 들어갔다.
 
 ### 3-1-16. Semicon Agent에 적용할 설계 방향
 
@@ -611,6 +611,7 @@ session/run store, permission policy, tracing/logging은 core v1에 들어갔다
 semicon_agent/
   core/
     agent.py              # orchestrator
+    approval.py           # human/programmatic approvals
     session.py            # run/session state
     policy.py             # permission rules
     trace.py              # event logging
@@ -641,9 +642,10 @@ semicon_agent/
 2. SQLite 기반 run history 저장
 3. `ToolSpec`에 위험도 필드 추가
 4. tool argument validation 강화
-5. streaming 가능한 LLM provider interface
-6. FastAPI endpoint 추가
-7. 간단한 web UI 추가
+5. bounded multi-step orchestration 추가
+6. streaming 가능한 LLM provider interface
+7. FastAPI endpoint 추가
+8. 간단한 web UI 추가
 
 반도체 분석 함수 자체는 나중 문제다. 중요한 것은 agent platform이 안전하고
 관찰 가능하며 교체 가능해야 한다는 점이다.
@@ -659,7 +661,7 @@ semicon_agent/
 | 파일 수정 | 가능 | 아직 없음 |
 | shell 실행 | 가능 | 아직 없음 |
 | 테스트 자동 실행 | 가능 | 수동/CLI 수준 |
-| 권한 관리 | 제품 차원 제공 | core v1 policy 있음 |
+| 권한 관리 | 제품 차원 제공 | policy + approval provider 있음 |
 | memory | 제품별 지원 | SQLite run history 있음 |
 | hooks | 제품별 지원 | 없음 |
 | subagents | 제품별 지원 | 없음 |
@@ -785,6 +787,7 @@ localhost가 아닌 endpoint는 HTTPS여야 하며, CLI에서 `--allow-remote-ll
 | 영역 | 파일 |
 | --- | --- |
 | Agent core | `semicon_agent/core/agent.py` |
+| Approval workflow | `semicon_agent/core/approval.py` |
 | Execution policy | `semicon_agent/core/policy.py` |
 | Trace events | `semicon_agent/core/trace.py` |
 | SQLite run store | `semicon_agent/core/session.py` |
@@ -807,9 +810,11 @@ localhost가 아닌 endpoint는 HTTPS여야 하며, CLI에서 `--allow-remote-ll
 3. LLM이 `AgentPlan`을 반환한다.
 4. `AgentPlan.tool_calls`에 있는 tool을 순서대로 실행한다.
 5. `ToolRuntime`이 schema validation, path policy, permission policy를 적용한다.
-6. 각 실행 결과는 `ToolResult`로 저장된다.
-7. 주요 단계는 `RunEvent`로 기록되고 SQLite run store에 저장된다.
-8. LLM이 tool 결과를 받아 최종 응답을 만든다.
+6. risky tool은 `ApprovalProvider`를 통해 승인/거절된다.
+7. 각 실행 결과는 `ToolResult`로 저장된다.
+8. `max_steps` 범위 안에서 필요하면 다시 planning한다.
+9. 주요 단계는 `RunEvent`로 기록되고 SQLite run store에 저장된다.
+10. LLM이 tool 결과를 받아 최종 응답을 만든다.
 
 현재 `MockLLM`은 keyword 기반으로 tool을 선택한다. 실제 LLM을 연결하면 모델이
 tool 설명과 schema를 보고 tool call 계획을 생성한다.
@@ -907,9 +912,9 @@ python -m pytest -p no:cacheprovider
 ### Phase 1. Framework hardening
 
 - structured plan schema 강화
-- tool argument validation 강화
+- tool argument validation 강화 - core v1 완료
 - error taxonomy 추가
-- run history 저장
+- run history 저장 - core v1 완료
 - CLI command 분리
 
 ### Phase 2. Provider layer
@@ -918,20 +923,21 @@ python -m pytest -p no:cacheprovider
 - vLLM adapter
 - LM Studio adapter
 - OpenRouter adapter
-- response streaming
+- response streaming interface - core v2 완료, provider별 true streaming은 남음
 - retry, timeout, rate limit
 
 ### Phase 3. Memory and artifacts
 
-- SQLite run store
+- SQLite run store - core v1 완료
 - artifact directory
 - uploaded dataset registry
 - previous analysis context retrieval
 
 ### Phase 4. Workflow engine
 
-- graph 기반 multi-step workflow
-- human approval node
+- bounded multi-step orchestration - core v2 완료
+- human approval provider - core v2 완료
+- graph 기반 workflow
 - retryable tool node
 - long-running job support
 
@@ -974,11 +980,13 @@ production으로 확장할 때는 다음 기준을 적용한다.
 
 - 실제 반도체 공정 통계의 정확성
 - 대용량 파일 처리 성능
-- 장기 memory
+- 장기 semantic memory
 - concurrent execution
 - user authentication
-- audit/compliance
+- enterprise audit/compliance
 - production security boundary
+- provider별 true token streaming
+- graph workflow와 resumable approval
 
 따라서 현재 코드는 framework prototype으로 사용하고, 실제 업무 적용 전에는 위
 로드맵의 hardening 작업이 필요하다.

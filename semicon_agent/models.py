@@ -21,3 +21,9 @@ class ToolResult(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     output: Any = None
     error: str | None = None
+
+
+class LLMStreamChunk(BaseModel):
+    content: str = ""
+    done: bool = False
+    event: str = "message"

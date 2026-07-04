@@ -5,12 +5,13 @@ import os
 import re
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from urllib.parse import urlparse
 from typing import Any
 
 from pydantic import ValidationError
 
-from semicon_agent.models import AgentPlan, ToolResult
+from semicon_agent.models import AgentPlan, LLMStreamChunk, ToolResult
 from semicon_agent.llm.privacy import redact_for_llm
 from semicon_agent.tools.base import ToolSpec
 
@@ -143,6 +144,15 @@ class OpenModelLLM:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
+
+    def stream_synthesize(
+        self,
+        user_request: str,
+        tool_results: list[ToolResult],
+        context: dict[str, object],
+    ) -> Iterator[LLMStreamChunk]:
+        yield LLMStreamChunk(content=self.synthesize(user_request, tool_results, context), done=False)
+        yield LLMStreamChunk(done=True, event="done")
 
 
 def _extract_json(text: str) -> str:

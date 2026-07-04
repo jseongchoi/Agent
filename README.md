@@ -11,17 +11,23 @@ future open-model APIs.
 1. LLM gateway: `MockLLM` now, `OpenModelLLM` later.
 2. Agent core: plan tool calls, execute tools, trace events, persist run history.
 3. Tool runtime: validate arguments, enforce path boundaries, apply permission policy.
-4. Tool registry: expose Python demo functions with JSON-like schemas.
-5. Semiconductor tools: lightweight placeholders for profile, yield, SPC/Cpk, anomaly, correlation, report.
-6. CLI: run analysis, inspect sessions, and view traces from the terminal.
+4. Orchestration loop: re-plan across bounded plan/act steps.
+5. Approval layer: require human or programmatic approval for risky tools.
+6. Streaming-ready LLM interface: expose synthesis as stream chunks.
+7. Tool registry: expose Python demo functions with JSON-like schemas.
+8. Semiconductor tools: lightweight placeholders for profile, yield, SPC/Cpk, anomaly, correlation, report.
+9. CLI: run analysis, inspect sessions, and view traces from the terminal.
 
-## Core v1 Features
+## Core Features
 
 - Tool argument validation
 - Workspace/data path policy
 - Tool risk metadata and approval policy
 - SQLite run/session store
 - Redacted trace events
+- Multi-step orchestration with `--max-steps`
+- Interactive approval with `--interactive-approval`
+- Streaming-ready synthesis with `--stream`
 - Local mock LLM for deterministic tests
 - OpenAI-compatible open-model adapter with remote endpoint safety checks
 
@@ -61,6 +67,18 @@ Show trace events:
 
 ```powershell
 python -m semicon_agent --show-trace <run_id>
+```
+
+Run with bounded re-planning and streaming synthesis:
+
+```powershell
+python -m semicon_agent "analyze yield" --data examples/sample_wafer.csv --max-steps 3 --stream
+```
+
+Prompt for tools that require approval:
+
+```powershell
+python -m semicon_agent "run approved task" --interactive-approval
 ```
 
 The semiconductor analysis tools are intentionally lightweight demo tools. The
