@@ -4,6 +4,10 @@
 현재 구현은 production 분석 엔진이 아니라, LLM 기반 Agent 프레임워크를 검증하기
 위한 MVP 구조다.
 
+처음 보는 사람은 이 문서부터 바로 읽기보다
+[`BEGINNER_GUIDE.md`](BEGINNER_GUIDE.md)를 먼저 읽는 것이 좋다. 입문 문서는 설치,
+첫 실행, sample data, CLI/API 사용법, 코드 읽는 순서, 문제 해결을 단계적으로 설명한다.
+
 ## 1. 목적
 
 이 프로젝트의 목적은 반도체 데이터 분석 업무에서 사용할 수 있는 Agent 구조를

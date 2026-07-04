@@ -56,8 +56,10 @@ python -m semicon_agent.self_check --data examples/sample_wafer.csv
 semicon-agent-check --data examples/sample_wafer.csv
 ```
 
-For the full architecture and extension guide, see
-[`docs/AGENT_GUIDE.md`](docs/AGENT_GUIDE.md).
+Recommended reading order:
+
+1. [`docs/BEGINNER_GUIDE.md`](docs/BEGINNER_GUIDE.md): first-time setup, concepts, commands, code tour, troubleshooting.
+2. [`docs/AGENT_GUIDE.md`](docs/AGENT_GUIDE.md): deeper architecture, coding-agent internals, extension roadmap.
 
 For a full report:
 
