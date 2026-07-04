@@ -66,6 +66,18 @@ class SQLiteRunStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                select run_id, request, status, final_answer, created_at, updated_at
+                from runs
+                where run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def count_runs(self) -> int:
         with self._connect() as conn:
             row = conn.execute("select count(*) as count from runs").fetchone()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -9,6 +10,18 @@ from semicon_agent.server.api import create_app
 
 
 DATA_PATH = Path(__file__).parents[1] / "examples" / "sample_wafer.csv"
+
+
+def _wait_for_job(client: TestClient, job_id: str, timeout: float = 5.0) -> dict[str, object]:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        response = client.get(f"/api/jobs/{job_id}")
+        assert response.status_code == 200
+        payload = response.json()
+        if payload["status"] in {"completed", "failed"}:
+            return payload
+        time.sleep(0.02)
+    raise AssertionError(f"Job did not finish within {timeout} seconds.")
 
 
 def test_health_endpoint(tmp_path: Path) -> None:
@@ -31,6 +44,7 @@ def test_status_endpoint_reports_runtime_shape(tmp_path: Path) -> None:
     assert payload["tool_count"] >= 5
     assert "yield_summary" in payload["tools"]
     assert payload["run_count"] == 0
+    assert payload["job_counts"] == {"queued": 0, "running": 0, "completed": 0, "failed": 0}
     assert "session_db" not in payload
 
 
@@ -72,6 +86,10 @@ def test_run_endpoint_persists_run_trace_and_artifact(tmp_path: Path) -> None:
 
     runs = client.get("/api/runs").json()
     assert runs[0]["run_id"] == payload["run_id"]
+
+    run_detail = client.get(f"/api/runs/{payload['run_id']}")
+    assert run_detail.status_code == 200
+    assert run_detail.json()["status"] == "completed"
 
     trace = client.get(f"/api/runs/{payload['run_id']}/trace").json()
     assert any(event["event_type"] == "run.end" for event in trace)
@@ -132,6 +150,67 @@ def test_upload_xlsx_then_run_with_artifact(tmp_path: Path) -> None:
 
     assert run.status_code == 200
     assert "Yield: 66.67%" in run.json()["final_answer"]
+
+
+def test_job_endpoint_runs_agent_and_exposes_status(tmp_path: Path) -> None:
+    client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "request": "analyze yield",
+            "data_path": str(DATA_PATH),
+            "max_steps": 3,
+        },
+    )
+
+    assert created.status_code == 202
+    assert created.json()["status"] in {"queued", "running"}
+
+    job = _wait_for_job(client, created.json()["job_id"])
+    assert job["status"] == "completed"
+    assert job["run_id"]
+    assert "Yield: 75.00%" in job["result"]["final_answer"]
+
+    listed = client.get("/api/jobs").json()
+    assert listed[0]["job_id"] == job["job_id"]
+
+    run_detail = client.get(f"/api/runs/{job['run_id']}")
+    assert run_detail.status_code == 200
+    assert run_detail.json()["status"] == "completed"
+
+
+def test_job_endpoint_returns_failed_status_for_runtime_error(tmp_path: Path, monkeypatch) -> None:
+    class FailingLLM:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def plan(self, user_request, tools, context):
+            raise RuntimeError("job llm unavailable")
+
+    monkeypatch.setattr("semicon_agent.server.api.OpenModelLLM", FailingLLM)
+    client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "request": "analyze yield",
+            "data_path": str(DATA_PATH),
+            "llm": "open-model",
+        },
+    )
+
+    assert created.status_code == 202
+    job = _wait_for_job(client, created.json()["job_id"])
+    assert job["status"] == "failed"
+    assert "job llm unavailable" in job["error"]
+
+
+def test_missing_job_and_run_return_404(tmp_path: Path) -> None:
+    client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
+
+    assert client.get("/api/jobs/missing").status_code == 404
+    assert client.get("/api/runs/missing").status_code == 404
 
 
 def test_run_rejects_data_path_outside_allowed_roots(tmp_path: Path) -> None:
@@ -259,3 +338,4 @@ def test_index_renders_ui(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert "Semicon Agent" in response.text
     assert "/api/runs" in response.text
+    assert "/api/jobs" in response.text

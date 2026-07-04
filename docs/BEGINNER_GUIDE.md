@@ -279,7 +279,11 @@ http://127.0.0.1:8008
 | `GET /api/artifacts/{name}` | artifact 다운로드 |
 | `POST /api/runs` | agent 실행 |
 | `GET /api/runs` | 최근 run 목록 |
+| `GET /api/runs/{run_id}` | run 상태와 최종 답변 조회 |
 | `GET /api/runs/{run_id}/trace` | run trace 조회 |
+| `POST /api/jobs` | background job으로 agent 실행 |
+| `GET /api/jobs` | 최근 job 목록 |
+| `GET /api/jobs/{job_id}` | job 상태 조회 |
 
 API server의 기본 보안 정책은 다음과 같다.
 
@@ -290,6 +294,10 @@ API server의 기본 보안 정책은 다음과 같다.
 
 이 정책은 이 프로젝트가 localhost prototype이어도 나중에 네트워크에 노출될 가능성을
 고려한 기본 방어선이다.
+
+긴 실행은 `/api/jobs`를 쓰는 것이 낫다. `/api/runs`는 요청 안에서 바로 실행하고
+결과를 반환한다. `/api/jobs`는 `202 Accepted`와 `job_id`를 먼저 반환하고,
+`GET /api/jobs/{job_id}`로 `queued`, `running`, `completed`, `failed` 상태를 확인한다.
 
 ## 10. MockLLM과 OpenModelLLM의 차이
 
@@ -646,8 +654,9 @@ python -m semicon_agent.server --allow-client-llm-config
 ### 16-5. Excel 파일이 느리다
 
 현재 demo tool은 pandas/openpyxl로 파일 전체를 읽는다. 대용량 Excel이나 압축 폭탄
-방어는 production 수준으로 구현되어 있지 않다. 실제 업무에서는 CSV/parquet 변환,
-row limit, file size limit, parser timeout, content sniffing을 추가해야 한다.
+방어는 production 수준으로 구현되어 있지 않다. 현재 row/column limit은 적용되어
+있지만, 실제 업무에서는 CSV/parquet 변환, streaming upload, parser timeout, content
+sniffing을 추가해야 한다.
 
 ## 17. 현재 구현의 한계
 
@@ -658,7 +667,7 @@ row limit, file size limit, parser timeout, content sniffing을 추가해야 한
 - production authentication/authorization
 - enterprise audit/compliance
 - true token streaming
-- background job queue
+- durable background job queue
 - resumable workflow
 - long-term semantic memory
 - deep redaction for remote LLM payloads
@@ -671,8 +680,8 @@ row limit, file size limit, parser timeout, content sniffing을 추가해야 한
 
 실제로 최신 Agent platform에 가까워지려면 다음 순서가 현실적이다.
 
-1. Background job queue: API run을 synchronous request에서 분리한다.
-2. Run status endpoint: `queued`, `running`, `completed`, `failed` 상태를 명확히 한다.
+1. Durable background job queue: 현재 in-memory job을 persistent worker로 바꾼다.
+2. Run/job status endpoint 확장: progress, cancellation, retry를 추가한다.
 3. True streaming: SSE 또는 WebSocket으로 token/tool event를 실시간 전송한다.
 4. Deep redaction: remote LLM에 보낼 payload를 tool별 summary로 제한한다.
 5. Upload hardening: streaming upload, magic byte sniffing, parser limit을 넣는다.

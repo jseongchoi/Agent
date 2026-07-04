@@ -11,7 +11,7 @@ The following checks were run against the repository:
 | --- | --- |
 | `python -m pip install -e ".[dev]"` | Passed |
 | `python -m pip check` | Passed |
-| `python -m pytest -p no:cacheprovider` | Passed, 42 tests |
+| `python -m pytest -p no:cacheprovider` | Passed, 47 tests |
 | `python -m semicon_agent.self_check --data examples/sample_wafer.csv` | Passed |
 | `semicon-agent-check --data examples/sample_wafer.csv` | Passed after editable reinstall |
 | `semicon-agent "analyze yield and SPC" --data examples/sample_wafer.csv` | Passed |
@@ -19,7 +19,7 @@ The following checks were run against the repository:
 | `semicon-agent-server --help` | Passed |
 | Markdown local link check | Passed |
 | `python -m compileall -q semicon_agent tests examples` | Passed |
-| API TestClient audit: health/status/run/trace/artifact/security blocks | Passed |
+| API TestClient audit: health/status/run/trace/artifact/job/security blocks | Passed |
 
 ## Fixed During This Audit
 
@@ -29,6 +29,9 @@ The following checks were run against the repository:
 | Excel support | Docs and upload allow `.xls`, but runtime dependencies did not include `xlrd`. | Added `xlrd>=2.0` to runtime dependencies. |
 | Excel regression coverage | `.xlsx` file loading and upload-run flow were not directly tested. | Added `load_table` `.xlsx` test and API upload `.xlsx` run test. |
 | Public API consistency | `ArtifactStore` was available at top-level package but not `semicon_agent.core`. | Exported `ArtifactStore` from `semicon_agent.core`. |
+| API execution model | Long API work only had a synchronous `/api/runs` path. | Added in-memory `/api/jobs` with 202 creation and status polling. |
+| Run status | There was no direct `GET /api/runs/{run_id}` endpoint. | Added run detail lookup. |
+| Data size limits | Table loading did not enforce row/column limits. | Added row/column limits in `load_table` and regression tests. |
 
 ## Current Strengths
 
@@ -41,6 +44,7 @@ The following checks were run against the repository:
 - Failure persistence for LLM planning/synthesis exceptions.
 - Artifact store for uploads, reports, and self-check outputs.
 - FastAPI API and simple local Web UI.
+- In-memory background job API for long local runs.
 - Serverless self-check suitable for smoke testing.
 - Beginner and architecture documentation now cover setup, commands, code tour, and limitations.
 
@@ -51,14 +55,14 @@ production-like platform.
 
 | Priority | Area | Work Needed | Reason |
 | --- | --- | --- | --- |
-| P0 | API execution model | Move `/api/runs` from synchronous execution to queued/background jobs. | A long LLM call or large data parse can hold an HTTP worker. |
+| P0 | Durable API execution model | Replace in-memory jobs with a persistent queue/worker. | Current jobs are useful locally but disappear on process restart. |
 | P0 | Auth boundary | Add authentication and role-based authorization before exposing the API beyond localhost. | Current API is suitable for local use, not shared deployment. |
 | P0 | Upload hardening | Stream uploads to disk, sniff file signatures, enforce parser limits, and protect Excel parsing. | Current upload reads full content into memory and trusts extension. |
 | P0 | Remote LLM redaction | Add per-tool result summaries and stricter outbound payload filtering. | Remote LLM calls should not receive full raw tool outputs by default. |
-| P1 | Run status API | Add `GET /api/runs/{run_id}` with `queued/running/completed/failed` status. | Needed for background jobs and UI progress. |
+| P1 | Job operations | Add cancellation, retry, progress events, and timeout policy. | Current job API only supports create/list/get status. |
 | P1 | True streaming | Implement provider streaming and SSE/WebSocket event delivery. | Current `stream` path is streaming-ready but returns one final JSON response. |
 | P1 | Error taxonomy | Replace broad error strings with structured error codes and categories. | Better UI handling, retries, and user support. |
-| P1 | Data size limits | Enforce row/column/cell limits inside table loading, not only file size policy. | A small compressed or Excel file can still expand into expensive parsing. |
+| P1 | Strong parser limits | Add parser timeout, cell limits, and content sniffing. | Row/column limits exist, but upload and parser hardening are still partial. |
 | P1 | Tool result contracts | Define typed result models for major tools. | Reduces downstream assumptions and makes LLM summaries safer. |
 
 ## P2/P3 Backlog
@@ -78,11 +82,11 @@ production-like platform.
 The next practical sprint should focus on production shape, not more demo
 analytics:
 
-1. Add a background job runner and run status endpoint.
+1. Replace in-memory jobs with a durable queue/worker.
 2. Add compact/default API payloads and a debug flag for full trace payloads.
-3. Add upload streaming and parser limits.
+3. Add upload streaming, content sniffing, parser timeout, and stronger Excel protection.
 4. Add a minimal auth boundary for non-local server use.
-5. Add structured error codes.
+5. Add structured error codes and cancellation/retry controls.
 
 Those five changes would move the framework closer to a robust agent platform
 without over-investing in placeholder semiconductor analysis logic.

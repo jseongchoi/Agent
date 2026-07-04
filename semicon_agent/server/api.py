@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import status as http_status
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -15,6 +16,7 @@ from semicon_agent.core.session import SQLiteRunStore
 from semicon_agent.core.trace import redact
 from semicon_agent.llm.mock import MockLLM
 from semicon_agent.llm.open_model import OpenModelLLM
+from semicon_agent.server.jobs import InMemoryJobStore
 from semicon_agent.tools.registry import build_default_registry
 
 
@@ -48,6 +50,8 @@ def create_app(
     app = FastAPI(title="Semicon Agent", version="0.1.0")
     run_store = SQLiteRunStore(session_db)
     artifact_store = ArtifactStore(artifact_root)
+    job_store = InMemoryJobStore()
+    app.add_event_handler("shutdown", job_store.shutdown)
     server_allowed_roots = _server_allowed_roots(allowed_roots, artifact_store.root)
     registry = build_default_registry()
 
@@ -64,6 +68,7 @@ def create_app(
             "tools": [tool.name for tool in registry.list()],
             "artifact_count": len(artifact_store.list_artifacts()),
             "run_count": run_store.count_runs(),
+            "job_counts": job_store.counts(),
             "default_llm": default_llm,
         }
         if debug_status:
@@ -82,37 +87,73 @@ def create_app(
 
     @app.post("/api/runs")
     def create_run(request: RunRequest) -> dict[str, object]:
+        llm, policy, data_path = _prepare_run_request(
+            request,
+            artifact_store=artifact_store,
+            server_allowed_roots=server_allowed_roots,
+            default_llm=default_llm,
+            open_model_base_url=open_model_base_url,
+            open_model_name=open_model_name,
+            open_model_api_key=open_model_api_key,
+            allow_remote_llm=allow_remote_llm,
+            allow_client_llm_config=allow_client_llm_config,
+            allow_client_risk_approval=allow_client_risk_approval,
+        )
         try:
-            validate_max_steps(request.max_steps)
-            data_path = _resolve_run_data_path(request, artifact_store, server_allowed_roots)
-            llm = _build_llm(
+            return _execute_run_request(
                 request,
-                default_llm=default_llm,
-                open_model_base_url=open_model_base_url,
-                open_model_name=open_model_name,
-                open_model_api_key=open_model_api_key,
-                allow_remote_llm=allow_remote_llm,
-                allow_client_llm_config=allow_client_llm_config,
-            )
-            policy = _build_policy(request, server_allowed_roots, allow_client_risk_approval=allow_client_risk_approval)
-        except (ValueError, PermissionError, FileNotFoundError) as exc:
-            status_code = 403 if isinstance(exc, PermissionError) else 400
-            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-        agent = SemiconductorAgent(llm=llm, policy=policy, run_store=run_store)
-        try:
-            run = agent.run(
-                request.request,
-                data_path=str(data_path) if data_path else None,
-                approved_risks=set(request.approve_risks),
-                max_steps=request.max_steps,
-                stream=request.stream,
+                llm=llm,
+                policy=policy,
+                data_path=data_path,
+                run_store=run_store,
+                artifact_store=artifact_store,
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        artifact_name = artifact_store.save_text(f"reports/{run.run_id}.md", run.final_answer)
-        payload = _run_payload(run)
-        payload["artifact"] = artifact_name
-        return payload
+
+    @app.post("/api/jobs", status_code=http_status.HTTP_202_ACCEPTED)
+    def create_job(request: RunRequest) -> dict[str, object]:
+        llm, policy, data_path = _prepare_run_request(
+            request,
+            artifact_store=artifact_store,
+            server_allowed_roots=server_allowed_roots,
+            default_llm=default_llm,
+            open_model_base_url=open_model_base_url,
+            open_model_name=open_model_name,
+            open_model_api_key=open_model_api_key,
+            allow_remote_llm=allow_remote_llm,
+            allow_client_llm_config=allow_client_llm_config,
+            allow_client_risk_approval=allow_client_risk_approval,
+        )
+        job = job_store.submit(
+            lambda: _execute_run_request(
+                request,
+                llm=llm,
+                policy=policy,
+                data_path=data_path,
+                run_store=run_store,
+                artifact_store=artifact_store,
+            )
+        )
+        return job.to_dict()
+
+    @app.get("/api/jobs")
+    def list_jobs(limit: int = 20) -> list[dict[str, object]]:
+        return [job.to_dict() for job in job_store.list(limit=limit)]
+
+    @app.get("/api/jobs/{job_id}")
+    def get_job(job_id: str) -> dict[str, object]:
+        job = job_store.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        return job.to_dict()
+
+    @app.get("/api/runs/{run_id}")
+    def get_run(run_id: str) -> dict[str, object]:
+        run = run_store.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found.")
+        return run
 
     @app.get("/api/runs")
     def list_runs(limit: int = 20) -> list[dict[str, object]]:
@@ -151,6 +192,59 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return app
+
+
+def _prepare_run_request(
+    request: RunRequest,
+    artifact_store: ArtifactStore,
+    server_allowed_roots: tuple[Path, ...],
+    default_llm: Literal["mock", "open-model"],
+    open_model_base_url: str,
+    open_model_name: str,
+    open_model_api_key: str | None,
+    allow_remote_llm: bool,
+    allow_client_llm_config: bool,
+    allow_client_risk_approval: bool,
+):
+    try:
+        validate_max_steps(request.max_steps)
+        data_path = _resolve_run_data_path(request, artifact_store, server_allowed_roots)
+        llm = _build_llm(
+            request,
+            default_llm=default_llm,
+            open_model_base_url=open_model_base_url,
+            open_model_name=open_model_name,
+            open_model_api_key=open_model_api_key,
+            allow_remote_llm=allow_remote_llm,
+            allow_client_llm_config=allow_client_llm_config,
+        )
+        policy = _build_policy(request, server_allowed_roots, allow_client_risk_approval=allow_client_risk_approval)
+    except (ValueError, PermissionError, FileNotFoundError) as exc:
+        status_code = 403 if isinstance(exc, PermissionError) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return llm, policy, data_path
+
+
+def _execute_run_request(
+    request: RunRequest,
+    llm,
+    policy: ExecutionPolicy,
+    data_path: Path | None,
+    run_store: SQLiteRunStore,
+    artifact_store: ArtifactStore,
+) -> dict[str, object]:
+    agent = SemiconductorAgent(llm=llm, policy=policy, run_store=run_store)
+    run = agent.run(
+        request.request,
+        data_path=str(data_path) if data_path else None,
+        approved_risks=set(request.approve_risks),
+        max_steps=request.max_steps,
+        stream=request.stream,
+    )
+    artifact_name = artifact_store.save_text(f"reports/{run.run_id}.md", run.final_answer)
+    payload = _run_payload(run)
+    payload["artifact"] = artifact_name
+    return payload
 
 
 def _build_llm(
@@ -287,10 +381,12 @@ def _index_html() -> str:
             <input id="maxSteps" type="number" min="1" max="20" value="3" />
           </div>
           <div>
-            <label for="stream">Stream path</label>
-            <select id="stream"><option value="false">off</option><option value="true">on</option></select>
+            <label for="mode">Mode</label>
+            <select id="mode"><option value="job">job</option><option value="sync">sync</option></select>
           </div>
         </div>
+        <label for="stream">Stream path</label>
+        <select id="stream"><option value="false">off</option><option value="true">on</option></select>
         <button id="run">Run Agent</button>
       </section>
       <section>
@@ -318,19 +414,27 @@ def _index_html() -> str:
           if (!upload.ok) throw new Error(JSON.stringify(uploaded));
           dataArtifact = uploaded.name;
         }
-        const response = await fetch("/api/runs", {
+        const body = {
+          request: document.getElementById("request").value,
+          data_path: dataArtifact ? null : document.getElementById("data").value,
+          data_artifact: dataArtifact,
+          max_steps: Number(document.getElementById("maxSteps").value),
+          stream: document.getElementById("stream").value === "true"
+        };
+        const mode = document.getElementById("mode").value;
+        const response = await fetch(mode === "job" ? "/api/jobs" : "/api/runs", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({
-            request: document.getElementById("request").value,
-            data_path: dataArtifact ? null : document.getElementById("data").value,
-            data_artifact: dataArtifact,
-            max_steps: Number(document.getElementById("maxSteps").value),
-            stream: document.getElementById("stream").value === "true"
-          })
+          body: JSON.stringify(body)
         });
-        const payload = await response.json();
+        let payload = await response.json();
         if (!response.ok) throw new Error(JSON.stringify(payload));
+        if (mode === "job") {
+          statusEl.textContent = `Queued: ${payload.job_id}`;
+          payload = await pollJob(payload.job_id);
+          if (payload.status === "failed") throw new Error(payload.error || "Job failed");
+          payload = payload.result;
+        }
         statusEl.textContent = `Completed: ${payload.run_id}`;
         outputEl.textContent = payload.final_answer + "\\n\\nArtifact: " + payload.artifact;
       } catch (error) {
@@ -340,6 +444,17 @@ def _index_html() -> str:
         runButton.disabled = false;
       }
     });
+    async function pollJob(jobId) {
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        const response = await fetch(`/api/jobs/${jobId}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(JSON.stringify(payload));
+        statusEl.textContent = `Job ${payload.status}: ${jobId}`;
+        if (payload.status === "completed" || payload.status === "failed") return payload;
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      throw new Error("Job timed out");
+    }
   </script>
 </body>
 </html>

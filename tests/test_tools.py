@@ -38,6 +38,30 @@ def test_load_table_supports_xlsx(tmp_path: Path) -> None:
     assert len(loaded) == 2
 
 
+def test_load_table_enforces_row_limit(tmp_path: Path) -> None:
+    data = tmp_path / "rows.csv"
+    data.write_text("a,b\n1,2\n3,4\n", encoding="utf-8")
+
+    try:
+        load_table(str(data), max_rows=1)
+    except ValueError as exc:
+        assert "row limit" in str(exc)
+    else:
+        raise AssertionError("Expected row limit error.")
+
+
+def test_load_table_enforces_column_limit(tmp_path: Path) -> None:
+    data = tmp_path / "columns.csv"
+    data.write_text("a,b,c\n1,2,3\n", encoding="utf-8")
+
+    try:
+        load_table(str(data), max_columns=2)
+    except ValueError as exc:
+        assert "column limit" in str(exc)
+    else:
+        raise AssertionError("Expected column limit error.")
+
+
 def test_yield_summary_overall_and_by_wafer() -> None:
     summary = yield_summary(str(DATA_PATH))
 

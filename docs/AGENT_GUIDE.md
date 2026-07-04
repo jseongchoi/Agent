@@ -809,7 +809,11 @@ python -m semicon_agent.server --host 127.0.0.1 --port 8008 --allow-root example
 | `GET /api/artifacts/{name}` | artifact 다운로드 |
 | `POST /api/runs` | agent 실행 |
 | `GET /api/runs` | 최근 run 목록 |
+| `GET /api/runs/{run_id}` | run 상태와 최종 답변 |
 | `GET /api/runs/{run_id}/trace` | 저장된 trace event |
+| `POST /api/jobs` | background job 생성 |
+| `GET /api/jobs` | 최근 job 목록 |
+| `GET /api/jobs/{job_id}` | job 상태 조회 |
 
 API server의 기본 정책은 local-first다.
 
@@ -1038,6 +1042,7 @@ python -m pytest -p no:cacheprovider
 - profile tool이 데이터 구조를 읽는지
 - yield tool이 pass/fail을 계산하는지
 - yield tool이 `hard_bin == 1`과 string `status` alias를 처리하는지
+- `.xlsx` 로딩과 upload-run 경로가 동작하는지
 - SPC demo tool이 기본 통계를 반환하는지
 - anomaly demo tool이 이상치를 반환하는지
 - correlation demo tool이 상관값을 반환하는지
@@ -1048,6 +1053,7 @@ python -m pytest -p no:cacheprovider
 - LLM planning/synthesis 실패가 SQLite에 `failed` 상태로 저장되는지
 - artifact path escape와 unsupported upload가 거부되는지
 - API status, upload, run, trace, artifact download가 동작하는지
+- API job 생성, 상태 조회, 실패 상태가 동작하는지
 - client-side LLM config와 risk approval이 기본 차단되는지
 - serverless self-check가 end-to-end로 동작하는지
 
@@ -1061,6 +1067,7 @@ python -m pytest -p no:cacheprovider
 - tool argument validation 강화 - core v1 완료
 - max step validation - core v4 보강 완료
 - LLM failure persistence - core v4 보강 완료
+- table row/column limit - core v5 보강 완료
 - error taxonomy 추가
 - run history 저장 - core v1 완료
 - CLI command 분리
@@ -1098,6 +1105,8 @@ python -m pytest -p no:cacheprovider
 - API status endpoint - core v4 보강 완료
 - client LLM/risk config guard - core v4 보강 완료
 - background worker
+- in-memory background job API - core v5 보강 완료
+- run status endpoint - core v5 보강 완료
 - auth boundary
 - audit log
 

@@ -31,6 +31,8 @@ NON_MEASUREMENT_HINTS = {
     "pass",
     "is_pass",
 }
+MAX_TABLE_ROWS = 200_000
+MAX_TABLE_COLUMNS = 500
 
 
 def build_semiconductor_tools() -> list[ToolSpec]:
@@ -323,17 +325,25 @@ def make_semiconductor_report(path: str) -> dict[str, Any]:
     )
 
 
-def load_table(path: str) -> pd.DataFrame:
+def load_table(path: str, max_rows: int = MAX_TABLE_ROWS, max_columns: int = MAX_TABLE_COLUMNS) -> pd.DataFrame:
     table_path = Path(path).expanduser().resolve()
     if not table_path.exists():
         raise FileNotFoundError(f"Data file not found: {table_path}")
     if table_path.suffix.lower() == ".csv":
-        return pd.read_csv(table_path)
+        return _enforce_table_limits(pd.read_csv(table_path, nrows=max_rows + 1), table_path, max_rows, max_columns)
     if table_path.suffix.lower() in {".tsv", ".txt"}:
-        return pd.read_csv(table_path, sep="\t")
+        return _enforce_table_limits(pd.read_csv(table_path, sep="\t", nrows=max_rows + 1), table_path, max_rows, max_columns)
     if table_path.suffix.lower() in {".xlsx", ".xls"}:
-        return pd.read_excel(table_path)
+        return _enforce_table_limits(pd.read_excel(table_path, nrows=max_rows + 1), table_path, max_rows, max_columns)
     raise ValueError(f"Unsupported data file type: {table_path.suffix}")
+
+
+def _enforce_table_limits(df: pd.DataFrame, path: Path, max_rows: int, max_columns: int) -> pd.DataFrame:
+    if len(df) > max_rows:
+        raise ValueError(f"Table exceeds row limit of {max_rows}: {path}")
+    if len(df.columns) > max_columns:
+        raise ValueError(f"Table exceeds column limit of {max_columns}: {path}")
+    return df
 
 
 def _measurement_columns(df: pd.DataFrame) -> list[str]:

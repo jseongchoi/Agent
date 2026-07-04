@@ -138,7 +138,11 @@ Primary API endpoints:
 - `GET /api/artifacts/{name}`
 - `POST /api/runs`
 - `GET /api/runs`
+- `GET /api/runs/{run_id}`
 - `GET /api/runs/{run_id}/trace`
+- `POST /api/jobs`
+- `GET /api/jobs`
+- `GET /api/jobs/{job_id}`
 
 The semiconductor analysis tools are intentionally lightweight demo tools. The
 main point is to validate agent planning, tool routing, execution, and later LLM
@@ -151,6 +155,7 @@ Input data expectations:
 - Common role columns: `lot_id`, `wafer_id`, `hard_bin`, `soft_bin`, `is_pass`, `pass`, `result`, `status`
 - If no pass/status column exists, `hard_bin == 1` or `soft_bin == 1` is treated as pass.
 - Numeric columns that are not obvious IDs/bins are treated as measurement columns.
+- Table loading enforces row and column limits to avoid accidental oversized parses.
 
 Useful environment variables:
 
