@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import io
 import json
 import re
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Any
+
+
+TEXT_UPLOAD_SUFFIXES = {".csv", ".tsv", ".txt"}
+EXCEL_UPLOAD_SUFFIXES = {".xlsx", ".xls"}
+SUPPORTED_UPLOAD_SUFFIXES = TEXT_UPLOAD_SUFFIXES | EXCEL_UPLOAD_SUFFIXES
+MAX_XLSX_ENTRIES = 1_000
+MAX_XLSX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
+OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 
 class ArtifactStore:
@@ -26,8 +36,9 @@ class ArtifactStore:
 
     def save_upload(self, original_name: str, content: bytes) -> str:
         suffix = Path(original_name).suffix.lower()
-        if suffix not in {".csv", ".tsv", ".txt", ".xlsx", ".xls"}:
+        if suffix not in SUPPORTED_UPLOAD_SUFFIXES:
             raise ValueError(f"Unsupported upload type: {suffix}")
+        _validate_upload_content(suffix, content)
         return self.save_bytes(f"uploads/{uuid.uuid4().hex}{suffix}", content)
 
     def save_json(self, name: str, payload: Any) -> str:
@@ -88,3 +99,46 @@ def _artifact_kind(path: Path, root: Path) -> str:
     if parts and parts[0] == "reports":
         return "report"
     return "artifact"
+
+
+def _validate_upload_content(suffix: str, content: bytes) -> None:
+    if not content:
+        raise ValueError("Upload cannot be empty.")
+    if suffix in TEXT_UPLOAD_SUFFIXES:
+        if b"\x00" in content[:8192]:
+            raise ValueError("Text upload contains NUL bytes.")
+        return
+    if suffix == ".xlsx":
+        _validate_xlsx_content(content)
+        return
+    if suffix == ".xls":
+        if not content.startswith(OLE2_MAGIC):
+            raise ValueError("XLS upload does not look like an OLE workbook.")
+        return
+
+
+def _validate_xlsx_content(content: bytes) -> None:
+    if not content.startswith(b"PK"):
+        raise ValueError("XLSX upload does not look like a ZIP workbook.")
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as workbook:
+            entries = workbook.infolist()
+            if len(entries) > MAX_XLSX_ENTRIES:
+                raise ValueError(f"XLSX upload exceeds archive entry limit of {MAX_XLSX_ENTRIES}.")
+            total_size = 0
+            for entry in entries:
+                total_size += entry.file_size
+                _validate_zip_entry(entry.filename)
+                if entry.filename.lower().endswith("vbaproject.bin"):
+                    raise ValueError("Macro-enabled workbook content is not allowed for .xlsx uploads.")
+                if total_size > MAX_XLSX_UNCOMPRESSED_BYTES:
+                    raise ValueError("XLSX upload expands beyond the uncompressed size limit.")
+    except zipfile.BadZipFile as exc:
+        raise ValueError("XLSX upload is not a valid ZIP workbook.") from exc
+
+
+def _validate_zip_entry(name: str) -> None:
+    normalized = name.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part]
+    if normalized.startswith("/") or ".." in parts:
+        raise ValueError("XLSX upload contains an unsafe archive path.")

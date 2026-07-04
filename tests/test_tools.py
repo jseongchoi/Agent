@@ -62,6 +62,18 @@ def test_load_table_enforces_column_limit(tmp_path: Path) -> None:
         raise AssertionError("Expected column limit error.")
 
 
+def test_load_table_enforces_file_size_limit(tmp_path: Path) -> None:
+    data = tmp_path / "size.csv"
+    data.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    try:
+        load_table(str(data), max_bytes=4)
+    except ValueError as exc:
+        assert "file size limit" in str(exc)
+    else:
+        raise AssertionError("Expected file size limit error.")
+
+
 def test_yield_summary_overall_and_by_wafer() -> None:
     summary = yield_summary(str(DATA_PATH))
 

@@ -31,6 +31,7 @@ web = [
 semicon-agent = "semicon_agent.cli:main"
 semicon-agent-server = "semicon_agent.server.__main__:main"
 semicon-agent-check = "semicon_agent.self_check:main"
+semicon-agent-eval = "semicon_agent.eval:main"
 
 [build-system]
 requires = ["setuptools>=68"]

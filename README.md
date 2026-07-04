@@ -20,6 +20,11 @@ future open-model APIs.
 10. API/UI layer: FastAPI endpoints, local web UI, uploads, report artifacts.
 11. Configuration: shared env-driven settings for CLI/server defaults.
 12. Self-check: serverless end-to-end health check.
+13. Optional API auth: bearer token gate for `/api/*` routes.
+14. Structured errors: stable `error.code/category/retryable` payloads.
+15. Job controls: background job polling, queued-job cancellation, failed-job retry.
+16. Observability export: trace events can be exported as span-like JSON.
+17. Eval CLI: deterministic agent scenario checks for CI.
 
 ## Core Features
 
@@ -35,6 +40,10 @@ future open-model APIs.
 - OpenAI-compatible open-model adapter with remote endpoint safety checks
 - Shared configuration via `SEMICON_AGENT_*` and `OPEN_MODEL_*` environment variables
 - Serverless self-check command for CI or local validation
+- Optional bearer-token API boundary via `SEMICON_AGENT_API_TOKEN`
+- Upload content sniffing for text and Excel files
+- Structured API error response with backward-compatible `detail`
+- Deterministic eval command for regression testing agent behavior
 
 ## Install
 
@@ -59,11 +68,20 @@ python -m semicon_agent.self_check --data examples/sample_wafer.csv
 semicon-agent-check --data examples/sample_wafer.csv
 ```
 
+Run deterministic agent evals:
+
+```powershell
+python -m semicon_agent.eval
+# or, after editable install:
+semicon-agent-eval
+```
+
 Recommended reading order:
 
 1. [`docs/BEGINNER_GUIDE.md`](docs/BEGINNER_GUIDE.md): first-time setup, concepts, commands, code tour, troubleshooting.
 2. [`docs/AGENT_GUIDE.md`](docs/AGENT_GUIDE.md): deeper architecture, coding-agent internals, extension roadmap.
-3. [`docs/IMPROVEMENT_AUDIT.md`](docs/IMPROVEMENT_AUDIT.md): verified checks, fixed gaps, remaining backlog.
+3. [`docs/LATEST_AGENT_TODO.md`](docs/LATEST_AGENT_TODO.md): latest-agent checklist, implemented items, remaining gaps.
+4. [`docs/IMPROVEMENT_AUDIT.md`](docs/IMPROVEMENT_AUDIT.md): verified checks, fixed gaps, remaining backlog.
 
 For a full report:
 
@@ -114,11 +132,22 @@ python -m semicon_agent.server --host 127.0.0.1 --port 8008 --allow-root example
 
 Then open `http://127.0.0.1:8008`.
 
+For an API token boundary:
+
+```powershell
+$env:SEMICON_AGENT_API_TOKEN="change-me"
+python -m semicon_agent.server --host 127.0.0.1 --port 8008 --allow-root examples
+```
+
+Clients then send `Authorization: Bearer change-me` to `/api/*`.
+
 Server API defaults are intentionally local-first:
 
 - Client-provided LLM `base_url`, `api_key`, and `allow_remote_llm` are rejected unless the server starts with `--allow-client-llm-config`.
 - Client-provided risk approvals are rejected unless the server starts with `--allow-client-risk-approval`.
 - Detailed path status is hidden unless the server starts with `--debug-status`.
+- If `--api-token` or `SEMICON_AGENT_API_TOKEN` is set, `/api/*` requires a bearer token.
+- API errors include both `detail` and structured `error.code`, `error.category`, and `error.retryable`.
 
 To run the server with a server-side open-model profile:
 
@@ -140,9 +169,12 @@ Primary API endpoints:
 - `GET /api/runs`
 - `GET /api/runs/{run_id}`
 - `GET /api/runs/{run_id}/trace`
+- `GET /api/runs/{run_id}/otel`
 - `POST /api/jobs`
 - `GET /api/jobs`
 - `GET /api/jobs/{job_id}`
+- `DELETE /api/jobs/{job_id}`
+- `POST /api/jobs/{job_id}/retry`
 
 The semiconductor analysis tools are intentionally lightweight demo tools. The
 main point is to validate agent planning, tool routing, execution, and later LLM
@@ -152,10 +184,12 @@ analysis logic only when you need real data-science behavior.
 Input data expectations:
 
 - Supported files: `.csv`, `.tsv`, `.txt`, `.xlsx`, `.xls`
+- Uploads reject unsupported extensions, empty content, NUL-containing text, malformed Excel signatures, unsafe XLSX archive paths, and macro-enabled `.xlsx` content.
 - Common role columns: `lot_id`, `wafer_id`, `hard_bin`, `soft_bin`, `is_pass`, `pass`, `result`, `status`
 - If no pass/status column exists, `hard_bin == 1` or `soft_bin == 1` is treated as pass.
 - Numeric columns that are not obvious IDs/bins are treated as measurement columns.
 - Table loading enforces row and column limits to avoid accidental oversized parses.
+- Direct table loading also enforces a file size limit.
 
 Useful environment variables:
 
@@ -172,4 +206,6 @@ Useful environment variables:
 
 ```powershell
 python -m pytest -p no:cacheprovider
+python -m semicon_agent.self_check --data examples/sample_wafer.csv
+python -m semicon_agent.eval
 ```

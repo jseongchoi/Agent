@@ -33,6 +33,7 @@ NON_MEASUREMENT_HINTS = {
 }
 MAX_TABLE_ROWS = 200_000
 MAX_TABLE_COLUMNS = 500
+MAX_TABLE_BYTES = 100 * 1024 * 1024
 
 
 def build_semiconductor_tools() -> list[ToolSpec]:
@@ -325,10 +326,17 @@ def make_semiconductor_report(path: str) -> dict[str, Any]:
     )
 
 
-def load_table(path: str, max_rows: int = MAX_TABLE_ROWS, max_columns: int = MAX_TABLE_COLUMNS) -> pd.DataFrame:
+def load_table(
+    path: str,
+    max_rows: int = MAX_TABLE_ROWS,
+    max_columns: int = MAX_TABLE_COLUMNS,
+    max_bytes: int = MAX_TABLE_BYTES,
+) -> pd.DataFrame:
     table_path = Path(path).expanduser().resolve()
     if not table_path.exists():
         raise FileNotFoundError(f"Data file not found: {table_path}")
+    if table_path.stat().st_size > max_bytes:
+        raise ValueError(f"Table exceeds file size limit of {max_bytes} bytes: {table_path}")
     if table_path.suffix.lower() == ".csv":
         return _enforce_table_limits(pd.read_csv(table_path, nrows=max_rows + 1), table_path, max_rows, max_columns)
     if table_path.suffix.lower() in {".tsv", ".txt"}:

@@ -1,0 +1,81 @@
+# 최신 에이전트 기준 TODO와 구현 내역
+
+이 문서는 2026년 기준 최신 에이전트 프레임워크에서 중요하게 다루는 기능을 기준으로
+`semicon-agent`에 무엇을 보강했는지 정리한다.
+
+참고한 기준은 다음과 같다.
+
+- OpenAI Agents SDK: orchestration, handoffs, guardrails, human review, state, observability
+  - <https://developers.openai.com/api/docs/guides/agents>
+  - <https://openai.github.io/openai-agents-python/tracing/>
+  - <https://openai.github.io/openai-agents-python/guardrails/>
+- Model Context Protocol: tools/resources/prompts를 표준 인터페이스로 연결
+  - <https://modelcontextprotocol.io/docs/getting-started/intro>
+- LangGraph/LangChain: durable execution, persistence, human-in-the-loop
+  - <https://docs.langchain.com/oss/python/langgraph/overview>
+  - <https://docs.langchain.com/oss/python/langgraph/persistence>
+  - <https://docs.langchain.com/oss/python/langchain/human-in-the-loop>
+- LlamaIndex workflows: workflow state, human input event, tool-driven agent 구성
+  - <https://developers.llamaindex.ai/python/framework/understanding/agent/human_in_the_loop/>
+- OWASP LLM Top 10: prompt injection, sensitive information disclosure, insecure plugin/tool design
+  - <https://owasp.org/www-project-top-10-for-large-language-model-applications/>
+- OpenTelemetry AI agent observability: GenAI/agent trace 표준화 방향
+  - <https://opentelemetry.io/blog/2025/ai-agent-observability/>
+
+## 핵심 방향
+
+최신 에이전트의 경쟁력은 “모델이 똑똑하다”만으로 결정되지 않는다. 실제로는 다음
+운영 기능이 중요하다.
+
+| 축 | 의미 | 현재 처리 |
+| --- | --- | --- |
+| Tool interface | LLM이 직접 실행하지 않고 runtime이 검증 후 tool 실행 | `ToolRegistry`, `ToolRuntime` |
+| Permission boundary | 파일/외부/API/위험 작업을 정책으로 제한 | `ExecutionPolicy`, approval provider |
+| Human-in-the-loop | 위험 작업 전 승인/거절/수정 가능 | CLI approval provider |
+| Persistence | run, event, artifact를 저장해 재현 가능하게 함 | SQLite run store, artifact store |
+| Async execution | 긴 작업을 background job으로 실행 | `/api/jobs` |
+| Job controls | 실패/대기 작업을 제어 | cancel/retry 추가 |
+| Observability | 실행 과정을 trace로 확인 | event trace, span-like export |
+| Security | LLM/tool/API 경계를 기본 차단 | client LLM/risk 차단, token auth |
+| Evals | 에이전트 동작을 자동 회귀 검증 | `semicon_agent.eval` |
+| CI | 변경 때마다 테스트 자동 실행 | GitHub Actions |
+
+## 이번에 구현한 TODO
+
+| 상태 | TODO | 구현 위치 | 검증 |
+| --- | --- | --- | --- |
+| 완료 | Optional API bearer token | `semicon_agent/server/api.py`, `config.py`, `server/__main__.py` | `test_api_token_protects_api_routes` |
+| 완료 | Structured API errors | `semicon_agent/core/errors.py`, `server/api.py` | missing job/run/auth 테스트 |
+| 완료 | Upload content sniffing | `semicon_agent/core/artifacts.py` | artifact/upload tests |
+| 완료 | Direct file size guard | `semicon_agent/tools/semiconductor.py` | file-size limit test |
+| 완료 | Job cancellation | `semicon_agent/server/jobs.py`, `server/api.py` | queued cancellation test |
+| 완료 | Job retry | `semicon_agent/server/jobs.py`, `server/api.py` | failed retry test |
+| 완료 | Span-like trace export | `semicon_agent/core/observability.py`, `/api/runs/{run_id}/otel` | run API test |
+| 완료 | Previous-run context option | `RunRequest.include_previous_runs` | covered through API model path |
+| 완료 | Deterministic eval CLI | `semicon_agent/eval.py`, `pyproject.toml` | `tests/test_eval.py` |
+| 완료 | GitHub Actions CI | `.github/workflows/test.yml` | workflow file added |
+
+## 아직 남은 고우선순위 TODO
+
+이 항목들은 “풀패키지 운영형”으로 가려면 계속 해야 한다.
+
+| 우선순위 | TODO | 이유 |
+| --- | --- | --- |
+| P0 | Durable queue/worker | 현재 job은 프로세스 재시작 시 사라지는 in-memory 구조다. |
+| P0 | Role-based auth | bearer token은 최소 경계일 뿐, 사용자/권한/감사 ID가 없다. |
+| P0 | Upload streaming | 현재 100MB 제한은 있지만 파일을 메모리로 읽는다. |
+| P0 | Parser timeout/cell budget | pandas/Excel parser가 오래 걸리는 입력을 완전히 차단하지 못한다. |
+| P0 | Remote LLM payload minimization | remote LLM에 tool result 전체를 보내지 않도록 요약/마스킹 계층이 필요하다. |
+| P1 | True SSE/WebSocket streaming | 현재 streaming-ready path는 있지만 HTTP 실시간 이벤트가 아니다. |
+| P1 | Durable human approval | approval 후 resume 가능한 checkpoint runtime이 필요하다. |
+| P1 | Provider adapters | Ollama, vLLM, LM Studio, OpenRouter 등 provider별 adapter가 필요하다. |
+| P1 | Tool result typed contracts | 주요 tool 결과를 Pydantic model로 고정하면 UI/LLM 요약 안정성이 좋아진다. |
+| P2 | Semiconductor tool pack | wafer map, bin pareto, lot trend, recipe comparison, defect clustering 등이 필요하다. |
+
+## 판단
+
+현재 코드는 “반도체 데이터 분석 업무용 에이전트 프레임워크의 강한 프로토타입”이다.
+기능 데모 수준을 넘어 agent runtime, 정책, trace, artifact, API, eval, CI까지 들어갔다.
+
+다만 “최고 수준 production agent platform”이라고 부르려면 durable execution, RBAC,
+streaming transport, provider ecosystem, parser timeout, remote LLM payload control이 더 필요하다.

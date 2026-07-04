@@ -281,9 +281,12 @@ http://127.0.0.1:8008
 | `GET /api/runs` | 최근 run 목록 |
 | `GET /api/runs/{run_id}` | run 상태와 최종 답변 조회 |
 | `GET /api/runs/{run_id}/trace` | run trace 조회 |
+| `GET /api/runs/{run_id}/otel` | 관측성용 span-like trace export |
 | `POST /api/jobs` | background job으로 agent 실행 |
 | `GET /api/jobs` | 최근 job 목록 |
 | `GET /api/jobs/{job_id}` | job 상태 조회 |
+| `DELETE /api/jobs/{job_id}` | queued job 취소 |
+| `POST /api/jobs/{job_id}/retry` | failed/cancelled job 재시도 |
 
 API server의 기본 보안 정책은 다음과 같다.
 
@@ -291,13 +294,15 @@ API server의 기본 보안 정책은 다음과 같다.
 - 클라이언트가 risk approval을 직접 여는 것도 차단한다.
 - `/api/status`는 기본적으로 로컬 절대 경로를 숨긴다.
 - 상세 경로 상태는 `--debug-status`를 명시해야만 나온다.
+- `SEMICON_AGENT_API_TOKEN` 또는 `--api-token`이 설정되면 `/api/*`는 bearer token을 요구한다.
+- API 오류는 `detail`과 함께 `error.code`, `error.category`, `error.retryable`을 반환한다.
 
 이 정책은 이 프로젝트가 localhost prototype이어도 나중에 네트워크에 노출될 가능성을
 고려한 기본 방어선이다.
 
 긴 실행은 `/api/jobs`를 쓰는 것이 낫다. `/api/runs`는 요청 안에서 바로 실행하고
 결과를 반환한다. `/api/jobs`는 `202 Accepted`와 `job_id`를 먼저 반환하고,
-`GET /api/jobs/{job_id}`로 `queued`, `running`, `completed`, `failed` 상태를 확인한다.
+`GET /api/jobs/{job_id}`로 `queued`, `running`, `completed`, `failed`, `cancelled` 상태를 확인한다.
 
 ## 10. MockLLM과 OpenModelLLM의 차이
 
@@ -579,6 +584,13 @@ trace는 agent가 어떤 순서로 LLM plan, tool execution, synthesis를 수행
 python -m pytest -p no:cacheprovider
 ```
 
+서버 없이 전체 agent smoke check와 eval도 실행할 수 있다.
+
+```powershell
+python -m semicon_agent.self_check --data examples/sample_wafer.csv
+python -m semicon_agent.eval
+```
+
 현재 테스트가 확인하는 것은 다음이다.
 
 | 테스트 파일 | 확인 내용 |
@@ -589,6 +601,7 @@ python -m pytest -p no:cacheprovider
 | `tests/test_core_v2.py` | multi-step orchestration, approval, stream path |
 | `tests/test_server_api.py` | FastAPI endpoint, upload, API guard |
 | `tests/test_config_artifacts_self_check.py` | 설정, artifact, self-check |
+| `tests/test_eval.py` | deterministic agent eval suite |
 
 새 기능을 추가할 때는 최소한 다음 중 하나의 테스트를 추가해야 한다.
 
@@ -653,25 +666,25 @@ python -m semicon_agent.server --allow-client-llm-config
 
 ### 16-5. Excel 파일이 느리다
 
-현재 demo tool은 pandas/openpyxl로 파일 전체를 읽는다. 대용량 Excel이나 압축 폭탄
-방어는 production 수준으로 구현되어 있지 않다. 현재 row/column limit은 적용되어
-있지만, 실제 업무에서는 CSV/parquet 변환, streaming upload, parser timeout, content
-sniffing을 추가해야 한다.
+현재 demo tool은 pandas/openpyxl로 파일 전체를 읽는다. row/column/file-size limit과
+upload content sniffing은 들어갔지만, production 수준의 streaming upload와 parser
+timeout은 아직 필요하다. 실제 업무에서는 CSV/parquet 변환, parser timeout, cell budget을
+추가하는 것이 좋다.
 
 ## 17. 현재 구현의 한계
 
 이 프로젝트는 완성된 상용 분석 플랫폼이 아니다. 현재 보장하지 않는 것은 다음이다.
 
 - 실제 반도체 공정 통계의 정확성
-- 대용량 파일 처리 성능
-- production authentication/authorization
+- 대용량 파일 streaming 처리 성능
+- role-based authentication/authorization
 - enterprise audit/compliance
 - true token streaming
 - durable background job queue
 - resumable workflow
 - long-term semantic memory
 - deep redaction for remote LLM payloads
-- upload streaming/content sniffing
+- upload streaming/parser timeout
 
 따라서 현재 코드는 "Agent framework prototype"으로 보고, 실제 업무 적용 전에는 보안,
 성능, 인증, 분석 정확도, 운영 관측성을 추가로 hardening해야 한다.
@@ -681,11 +694,11 @@ sniffing을 추가해야 한다.
 실제로 최신 Agent platform에 가까워지려면 다음 순서가 현실적이다.
 
 1. Durable background job queue: 현재 in-memory job을 persistent worker로 바꾼다.
-2. Run/job status endpoint 확장: progress, cancellation, retry를 추가한다.
+2. Run/job status endpoint 확장: progress와 running-job cooperative cancellation을 추가한다.
 3. True streaming: SSE 또는 WebSocket으로 token/tool event를 실시간 전송한다.
 4. Deep redaction: remote LLM에 보낼 payload를 tool별 summary로 제한한다.
-5. Upload hardening: streaming upload, magic byte sniffing, parser limit을 넣는다.
-6. Auth boundary: API server에 사용자 인증/권한을 둔다.
+5. Upload hardening: streaming upload, parser timeout, cell budget을 넣는다.
+6. Auth boundary: API server에 사용자/역할 기반 권한을 둔다.
 7. Workflow graph: long-running/resumable approval이 가능한 graph executor를 만든다.
 8. Semiconductor tool pack: wafer map, bin pareto, lot trend, recipe comparison을 추가한다.
 
@@ -696,11 +709,12 @@ sniffing을 추가해야 한다.
 1. `README.md`: 프로젝트가 무엇인지 빠르게 본다.
 2. `docs/BEGINNER_GUIDE.md`: 설치, 실행, 내부 흐름을 따라간다.
 3. `docs/AGENT_GUIDE.md`: agent 원리, Codex/Claude Code와의 관계, 장기 설계를 읽는다.
-4. `docs/IMPROVEMENT_AUDIT.md`: 검증된 항목과 남은 개선 backlog를 확인한다.
-5. `tests/`: 실제로 무엇을 보장하는지 확인한다.
-6. `semicon_agent/tools/semiconductor.py`: 반도체 분석 함수 확장 지점을 확인한다.
-7. `semicon_agent/core/agent.py`: agent loop를 이해한다.
-8. `semicon_agent/server/api.py`: API/UI 사용 흐름을 이해한다.
+4. `docs/LATEST_AGENT_TODO.md`: 최신 에이전트 기준 TODO와 구현 내역을 확인한다.
+5. `docs/IMPROVEMENT_AUDIT.md`: 검증된 항목과 남은 개선 backlog를 확인한다.
+6. `tests/`: 실제로 무엇을 보장하는지 확인한다.
+7. `semicon_agent/tools/semiconductor.py`: 반도체 분석 함수 확장 지점을 확인한다.
+8. `semicon_agent/core/agent.py`: agent loop를 이해한다.
+9. `semicon_agent/server/api.py`: API/UI 사용 흐름을 이해한다.
 
 이 순서대로 보면 프로젝트를 처음 보는 사람도 "어떻게 실행하고, 어디를 고치고, 어떤
 한계가 있는지"를 파악할 수 있다.

@@ -23,6 +23,7 @@ def _env_roots(name: str) -> tuple[Path, ...]:
 class AgentSettings:
     session_db: Path = Path(".semicon_agent/runs.sqlite")
     artifact_root: Path = Path(".semicon_agent/artifacts")
+    api_token: str | None = None
     open_model_base_url: str = "http://localhost:8000/v1"
     open_model_name: str = "open-model"
     open_model_api_key: str | None = None
@@ -37,6 +38,7 @@ class AgentSettings:
         return cls(
             session_db=Path(os.getenv("SEMICON_AGENT_SESSION_DB", ".semicon_agent/runs.sqlite")),
             artifact_root=Path(os.getenv("SEMICON_AGENT_ARTIFACT_ROOT", ".semicon_agent/artifacts")),
+            api_token=os.getenv("SEMICON_AGENT_API_TOKEN"),
             open_model_base_url=os.getenv("OPEN_MODEL_BASE_URL", "http://localhost:8000/v1"),
             open_model_name=os.getenv("OPEN_MODEL_NAME", "open-model"),
             open_model_api_key=os.getenv("OPEN_MODEL_API_KEY"),

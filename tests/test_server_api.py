@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from threading import Event
 from pathlib import Path
 
 import pandas as pd
@@ -18,7 +19,7 @@ def _wait_for_job(client: TestClient, job_id: str, timeout: float = 5.0) -> dict
         response = client.get(f"/api/jobs/{job_id}")
         assert response.status_code == 200
         payload = response.json()
-        if payload["status"] in {"completed", "failed"}:
+        if payload["status"] in {"completed", "failed", "cancelled"}:
             return payload
         time.sleep(0.02)
     raise AssertionError(f"Job did not finish within {timeout} seconds.")
@@ -44,8 +45,23 @@ def test_status_endpoint_reports_runtime_shape(tmp_path: Path) -> None:
     assert payload["tool_count"] >= 5
     assert "yield_summary" in payload["tools"]
     assert payload["run_count"] == 0
-    assert payload["job_counts"] == {"queued": 0, "running": 0, "completed": 0, "failed": 0}
+    assert payload["job_counts"] == {"queued": 0, "running": 0, "completed": 0, "failed": 0, "cancelled": 0}
     assert "session_db" not in payload
+
+
+def test_api_token_protects_api_routes(tmp_path: Path) -> None:
+    client = TestClient(
+        create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts", api_token="secret")
+    )
+
+    assert client.get("/health").status_code == 200
+
+    blocked = client.get("/api/status")
+    assert blocked.status_code == 401
+    assert blocked.json()["error"]["code"] == "AUTH_REQUIRED"
+
+    allowed = client.get("/api/status", headers={"Authorization": "Bearer secret"})
+    assert allowed.status_code == 200
 
 
 def test_status_endpoint_can_expose_debug_paths_when_enabled(tmp_path: Path) -> None:
@@ -93,6 +109,10 @@ def test_run_endpoint_persists_run_trace_and_artifact(tmp_path: Path) -> None:
 
     trace = client.get(f"/api/runs/{payload['run_id']}/trace").json()
     assert any(event["event_type"] == "run.end" for event in trace)
+
+    spans = client.get(f"/api/runs/{payload['run_id']}/otel").json()
+    assert spans[0]["trace_id"]
+    assert any(span["name"] == "run.end" for span in spans)
 
     artifact = client.get(f"/api/artifacts/{payload['artifact']}")
     assert artifact.status_code == 200
@@ -206,11 +226,72 @@ def test_job_endpoint_returns_failed_status_for_runtime_error(tmp_path: Path, mo
     assert "job llm unavailable" in job["error"]
 
 
+def test_job_endpoint_can_retry_failed_job(tmp_path: Path, monkeypatch) -> None:
+    calls = {"count": 0}
+
+    def flaky_execute(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("transient failure")
+        return {"run_id": "retry-run", "final_answer": "retried", "artifact": "reports/retry.md"}
+
+    monkeypatch.setattr("semicon_agent.server.api._execute_run_request", flaky_execute)
+    client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "request": "analyze yield",
+            "data_path": str(DATA_PATH),
+            "max_steps": 3,
+        },
+    )
+    failed = _wait_for_job(client, created.json()["job_id"])
+    assert failed["status"] == "failed"
+
+    retried = client.post(f"/api/jobs/{failed['job_id']}/retry")
+    assert retried.status_code == 202
+    completed = _wait_for_job(client, retried.json()["job_id"])
+    assert completed["status"] == "completed"
+    assert completed["run_id"] == "retry-run"
+
+
+def test_job_endpoint_can_cancel_queued_job(tmp_path: Path, monkeypatch) -> None:
+    started = Event()
+    release = Event()
+
+    def slow_execute(*args, **kwargs):
+        started.set()
+        release.wait(timeout=5)
+        return {"run_id": "slow-run", "final_answer": "done", "artifact": "reports/slow.md"}
+
+    monkeypatch.setattr("semicon_agent.server.api._execute_run_request", slow_execute)
+    client = TestClient(
+        create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts", job_workers=1)
+    )
+
+    first = client.post("/api/jobs", json={"request": "analyze yield", "data_path": str(DATA_PATH)})
+    assert first.status_code == 202
+    assert started.wait(timeout=2)
+
+    second = client.post("/api/jobs", json={"request": "analyze yield", "data_path": str(DATA_PATH)})
+    cancelled = client.delete(f"/api/jobs/{second.json()['job_id']}")
+    release.set()
+
+    assert cancelled.status_code == 202
+    assert cancelled.json()["status"] == "cancelled"
+
+
 def test_missing_job_and_run_return_404(tmp_path: Path) -> None:
     client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
 
-    assert client.get("/api/jobs/missing").status_code == 404
-    assert client.get("/api/runs/missing").status_code == 404
+    missing_job = client.get("/api/jobs/missing")
+    assert missing_job.status_code == 404
+    assert missing_job.json()["error"]["code"] == "JOB_NOT_FOUND"
+
+    missing_run = client.get("/api/runs/missing")
+    assert missing_run.status_code == 404
+    assert missing_run.json()["error"]["code"] == "RUN_NOT_FOUND"
 
 
 def test_run_rejects_data_path_outside_allowed_roots(tmp_path: Path) -> None:

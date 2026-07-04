@@ -20,6 +20,8 @@ def main() -> None:
     parser.add_argument("--allow-client-llm-config", action="store_true")
     parser.add_argument("--allow-client-risk-approval", action="store_true")
     parser.add_argument("--debug-status", action="store_true")
+    parser.add_argument("--api-token", default=settings.api_token)
+    parser.add_argument("--job-workers", type=int, default=2)
     args = parser.parse_args()
     uvicorn.run(
         create_app(
@@ -34,6 +36,8 @@ def main() -> None:
             allow_client_llm_config=args.allow_client_llm_config,
             allow_client_risk_approval=args.allow_client_risk_approval,
             debug_status=args.debug_status,
+            api_token=args.api_token,
+            job_workers=args.job_workers,
         ),
         host=args.host,
         port=args.port,
