@@ -16,6 +16,7 @@ def test_settings_reads_environment_roots(tmp_path: Path, monkeypatch: pytest.Mo
     extra = tmp_path / "extra"
     monkeypatch.setenv("SEMICON_AGENT_ALLOWED_ROOTS", str(extra))
     monkeypatch.setenv("SEMICON_AGENT_ARTIFACT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("SEMICON_AGENT_JOB_DB", str(tmp_path / "jobs.sqlite"))
     monkeypatch.setenv("SEMICON_AGENT_API_TOKEN", "test-token")
 
     settings = AgentSettings.from_env(cwd=tmp_path / "cwd")
@@ -24,6 +25,7 @@ def test_settings_reads_environment_roots(tmp_path: Path, monkeypatch: pytest.Mo
     assert (tmp_path / "cwd").resolve() in roots
     assert extra.resolve() in roots
     assert (tmp_path / "artifacts").resolve() in roots
+    assert settings.job_db == tmp_path / "jobs.sqlite"
     assert settings.api_token == "test-token"
 
 

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import concurrent.futures
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -34,6 +35,8 @@ NON_MEASUREMENT_HINTS = {
 MAX_TABLE_ROWS = 200_000
 MAX_TABLE_COLUMNS = 500
 MAX_TABLE_BYTES = 100 * 1024 * 1024
+MAX_TABLE_CELLS = 5_000_000
+PARSER_TIMEOUT_SECONDS = 30.0
 
 
 def build_semiconductor_tools() -> list[ToolSpec]:
@@ -331,6 +334,8 @@ def load_table(
     max_rows: int = MAX_TABLE_ROWS,
     max_columns: int = MAX_TABLE_COLUMNS,
     max_bytes: int = MAX_TABLE_BYTES,
+    max_cells: int = MAX_TABLE_CELLS,
+    parser_timeout_s: float = PARSER_TIMEOUT_SECONDS,
 ) -> pd.DataFrame:
     table_path = Path(path).expanduser().resolve()
     if not table_path.exists():
@@ -338,19 +343,42 @@ def load_table(
     if table_path.stat().st_size > max_bytes:
         raise ValueError(f"Table exceeds file size limit of {max_bytes} bytes: {table_path}")
     if table_path.suffix.lower() == ".csv":
-        return _enforce_table_limits(pd.read_csv(table_path, nrows=max_rows + 1), table_path, max_rows, max_columns)
+        df = _read_with_timeout(lambda: pd.read_csv(table_path, nrows=max_rows + 1), table_path, parser_timeout_s)
+        return _enforce_table_limits(df, table_path, max_rows, max_columns, max_cells)
     if table_path.suffix.lower() in {".tsv", ".txt"}:
-        return _enforce_table_limits(pd.read_csv(table_path, sep="\t", nrows=max_rows + 1), table_path, max_rows, max_columns)
+        df = _read_with_timeout(lambda: pd.read_csv(table_path, sep="\t", nrows=max_rows + 1), table_path, parser_timeout_s)
+        return _enforce_table_limits(df, table_path, max_rows, max_columns, max_cells)
     if table_path.suffix.lower() in {".xlsx", ".xls"}:
-        return _enforce_table_limits(pd.read_excel(table_path, nrows=max_rows + 1), table_path, max_rows, max_columns)
+        df = _read_with_timeout(lambda: pd.read_excel(table_path, nrows=max_rows + 1), table_path, parser_timeout_s)
+        return _enforce_table_limits(df, table_path, max_rows, max_columns, max_cells)
     raise ValueError(f"Unsupported data file type: {table_path.suffix}")
 
 
-def _enforce_table_limits(df: pd.DataFrame, path: Path, max_rows: int, max_columns: int) -> pd.DataFrame:
+def _read_with_timeout(read: Callable[[], pd.DataFrame], path: Path, timeout_s: float) -> pd.DataFrame:
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="semicon-agent-parser")
+    future = executor.submit(read)
+    try:
+        return future.result(timeout=timeout_s)
+    except concurrent.futures.TimeoutError as exc:
+        future.cancel()
+        raise ValueError(f"Table parsing exceeded timeout of {timeout_s} seconds: {path}") from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _enforce_table_limits(
+    df: pd.DataFrame,
+    path: Path,
+    max_rows: int,
+    max_columns: int,
+    max_cells: int,
+) -> pd.DataFrame:
     if len(df) > max_rows:
         raise ValueError(f"Table exceeds row limit of {max_rows}: {path}")
     if len(df.columns) > max_columns:
         raise ValueError(f"Table exceeds column limit of {max_columns}: {path}")
+    if len(df) * len(df.columns) > max_cells:
+        raise ValueError(f"Table exceeds cell limit of {max_cells}: {path}")
     return df
 
 

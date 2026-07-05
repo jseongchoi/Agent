@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import time
-from threading import Event
 from pathlib import Path
+from threading import Event
 
 import pandas as pd
 from fastapi.testclient import TestClient
@@ -78,6 +78,7 @@ def test_status_endpoint_can_expose_debug_paths_when_enabled(tmp_path: Path) -> 
     assert response.status_code == 200
     payload = response.json()
     assert payload["session_db"].endswith("runs.sqlite")
+    assert payload["job_db"].endswith("jobs.sqlite")
     assert payload["allowed_roots"]
 
 
@@ -99,6 +100,9 @@ def test_run_endpoint_persists_run_trace_and_artifact(tmp_path: Path) -> None:
     assert payload["run_id"]
     assert payload["artifact"].endswith(".md")
     assert "Yield: 75.00%" in payload["final_answer"]
+    assert "events" not in payload
+    assert "tool_results" not in payload
+    assert payload["tool_result_count"] == 1
 
     runs = client.get("/api/runs").json()
     assert runs[0]["run_id"] == payload["run_id"]
@@ -117,6 +121,25 @@ def test_run_endpoint_persists_run_trace_and_artifact(tmp_path: Path) -> None:
     artifact = client.get(f"/api/artifacts/{payload['artifact']}")
     assert artifact.status_code == 200
     assert "Yield: 75.00%" in artifact.text
+
+
+def test_run_endpoint_can_return_debug_payload(tmp_path: Path) -> None:
+    client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
+
+    response = client.post(
+        "/api/runs",
+        json={
+            "request": "analyze yield",
+            "data_path": str(DATA_PATH),
+            "max_steps": 3,
+            "debug": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["events"]
+    assert payload["tool_results"][0]["name"] == "yield_summary"
 
 
 def test_upload_then_run_with_artifact(tmp_path: Path) -> None:
@@ -172,6 +195,19 @@ def test_upload_xlsx_then_run_with_artifact(tmp_path: Path) -> None:
     assert "Yield: 66.67%" in run.json()["final_answer"]
 
 
+def test_invalid_upload_is_removed(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=artifacts))
+
+    response = client.post(
+        "/api/artifacts",
+        files={"file": ("bad.xlsx", b"not a workbook", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+
+    assert response.status_code == 400
+    assert not list((artifacts / "uploads").glob("*"))
+
+
 def test_job_endpoint_runs_agent_and_exposes_status(tmp_path: Path) -> None:
     client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
 
@@ -198,6 +234,31 @@ def test_job_endpoint_runs_agent_and_exposes_status(tmp_path: Path) -> None:
     run_detail = client.get(f"/api/runs/{job['run_id']}")
     assert run_detail.status_code == 200
     assert run_detail.json()["status"] == "completed"
+
+
+def test_job_metadata_survives_app_recreation(tmp_path: Path) -> None:
+    session_db = tmp_path / "runs.sqlite"
+    job_db = tmp_path / "jobs.sqlite"
+    artifact_root = tmp_path / "artifacts"
+    client = TestClient(create_app(session_db=session_db, job_db=job_db, artifact_root=artifact_root))
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "request": "analyze yield",
+            "data_path": str(DATA_PATH),
+            "max_steps": 3,
+        },
+    )
+    completed = _wait_for_job(client, created.json()["job_id"])
+    assert completed["status"] == "completed"
+
+    restarted = TestClient(create_app(session_db=session_db, job_db=job_db, artifact_root=artifact_root))
+    loaded = restarted.get(f"/api/jobs/{completed['job_id']}")
+
+    assert loaded.status_code == 200
+    assert loaded.json()["status"] == "completed"
+    assert loaded.json()["run_id"] == completed["run_id"]
 
 
 def test_job_endpoint_returns_failed_status_for_runtime_error(tmp_path: Path, monkeypatch) -> None:

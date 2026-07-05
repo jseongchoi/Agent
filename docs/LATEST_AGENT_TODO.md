@@ -54,6 +54,10 @@
 | 완료 | Previous-run context option | `RunRequest.include_previous_runs` | covered through API model path |
 | 완료 | Deterministic eval CLI | `semicon_agent/eval.py`, `pyproject.toml` | `tests/test_eval.py` |
 | 완료 | GitHub Actions CI | `.github/workflows/test.yml` | workflow file added |
+| 완료 | Durable job metadata | `semicon_agent/server/jobs.py` | app recreation test |
+| 완료 | Compact API payload | `semicon_agent/server/api.py` | compact/debug response tests |
+| 완료 | Parser timeout/cell budget | `semicon_agent/tools/semiconductor.py` | parser/cell limit tests |
+| 완료 | Chunked upload write/cleanup | `semicon_agent/server/api.py`, `core/artifacts.py` | invalid upload cleanup test |
 
 ## 아직 남은 고우선순위 TODO
 
@@ -61,10 +65,9 @@
 
 | 우선순위 | TODO | 이유 |
 | --- | --- | --- |
-| P0 | Durable queue/worker | 현재 job은 프로세스 재시작 시 사라지는 in-memory 구조다. |
+| P0 | Durable queue/worker | job metadata는 SQLite에 남지만, 프로세스 재시작 후 queued/running task를 재개하지는 못한다. |
 | P0 | Role-based auth | bearer token은 최소 경계일 뿐, 사용자/권한/감사 ID가 없다. |
-| P0 | Upload streaming | 현재 100MB 제한은 있지만 파일을 메모리로 읽는다. |
-| P0 | Parser timeout/cell budget | pandas/Excel parser가 오래 걸리는 입력을 완전히 차단하지 못한다. |
+| P0 | Full upload streaming | API는 chunk write를 하지만, Excel 검증과 parser는 여전히 로컬 파일 전체를 검사한다. |
 | P0 | Remote LLM payload minimization | remote LLM에 tool result 전체를 보내지 않도록 요약/마스킹 계층이 필요하다. |
 | P1 | True SSE/WebSocket streaming | 현재 streaming-ready path는 있지만 HTTP 실시간 이벤트가 아니다. |
 | P1 | Durable human approval | approval 후 resume 가능한 checkpoint runtime이 필요하다. |
@@ -75,7 +78,8 @@
 ## 판단
 
 현재 코드는 “반도체 데이터 분석 업무용 에이전트 프레임워크의 강한 프로토타입”이다.
-기능 데모 수준을 넘어 agent runtime, 정책, trace, artifact, API, eval, CI까지 들어갔다.
+기능 데모 수준을 넘어 agent runtime, 정책, trace, artifact, API, job metadata persistence,
+parser guard, eval, CI까지 들어갔다.
 
-다만 “최고 수준 production agent platform”이라고 부르려면 durable execution, RBAC,
-streaming transport, provider ecosystem, parser timeout, remote LLM payload control이 더 필요하다.
+다만 “최고 수준 production agent platform”이라고 부르려면 durable worker execution, RBAC,
+streaming transport, provider ecosystem, process-isolated parsing, remote LLM payload control이 더 필요하다.

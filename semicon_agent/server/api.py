@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from semicon_agent.config import validate_max_steps
 from semicon_agent.core.agent import AgentRun, SemiconductorAgent
-from semicon_agent.core.artifacts import ArtifactStore
+from semicon_agent.core.artifacts import MAX_UPLOAD_BYTES, ArtifactStore
 from semicon_agent.core.errors import AgentAPIError
 from semicon_agent.core.observability import export_events_as_spans
 from semicon_agent.core.policy import ExecutionPolicy, RiskLevel
@@ -36,10 +36,12 @@ class RunRequest(BaseModel):
     stream: bool = False
     approve_risks: list[RiskLevel] = Field(default_factory=list)
     include_previous_runs: int = Field(default=0, ge=0, le=5)
+    debug: bool = False
 
 
 def create_app(
     session_db: str | Path = ".semicon_agent/runs.sqlite",
+    job_db: str | Path | None = None,
     artifact_root: str | Path = ".semicon_agent/artifacts",
     allowed_roots: tuple[str | Path, ...] | None = None,
     default_llm: Literal["mock", "open-model"] = "mock",
@@ -56,7 +58,8 @@ def create_app(
     app = FastAPI(title="Semicon Agent", version="0.1.0")
     run_store = SQLiteRunStore(session_db)
     artifact_store = ArtifactStore(artifact_root)
-    job_store = InMemoryJobStore(max_workers=job_workers)
+    resolved_job_db = job_db if job_db is not None else Path(session_db).expanduser().with_name("jobs.sqlite")
+    job_store = InMemoryJobStore(max_workers=job_workers, metadata_path=resolved_job_db)
     app.add_event_handler("shutdown", job_store.shutdown)
     server_allowed_roots = _server_allowed_roots(allowed_roots, artifact_store.root)
     registry = build_default_registry()
@@ -89,6 +92,7 @@ def create_app(
             payload.update(
                 {
                     "session_db": str(Path(session_db).expanduser().resolve()),
+                    "job_db": str(Path(resolved_job_db).expanduser().resolve()),
                     "artifact_root": str(artifact_store.root.resolve()),
                     "allowed_roots": [str(root) for root in server_allowed_roots],
                 }
@@ -225,14 +229,26 @@ def create_app(
     @app.post("/api/artifacts")
     async def upload_artifact(http_request: Request, file: UploadFile = File(...)) -> dict[str, object]:
         _require_api_token(http_request, api_token)
-        content = await file.read()
-        if len(content) > 100 * 1024 * 1024:
-            raise AgentAPIError(413, "UPLOAD_TOO_LARGE", "Upload exceeds 100 MB limit.", "validation")
+        path: Path | None = None
         try:
-            name = artifact_store.save_upload(file.filename or "upload", content)
+            name, path, suffix = artifact_store.prepare_upload(file.filename or "upload")
+            size = 0
+            with path.open("wb") as output:
+                while chunk := await file.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_UPLOAD_BYTES:
+                        raise AgentAPIError(413, "UPLOAD_TOO_LARGE", "Upload exceeds 100 MB limit.", "validation")
+                    output.write(chunk)
+            artifact_store.validate_upload_file(suffix, path)
         except ValueError as exc:
+            if path is not None:
+                path.unlink(missing_ok=True)
             raise AgentAPIError(400, "INVALID_UPLOAD", str(exc), "validation") from exc
-        return {"name": name, "original_name": file.filename, "size": len(content)}
+        except AgentAPIError:
+            if path is not None:
+                path.unlink(missing_ok=True)
+            raise
+        return {"name": name, "original_name": file.filename, "size": size}
 
     @app.get("/api/artifacts/{name:path}")
     def get_artifact(name: str, http_request: Request) -> FileResponse:
@@ -301,7 +317,7 @@ def _execute_run_request(
         previous_runs=previous_runs,
     )
     artifact_name = artifact_store.save_text(f"reports/{run.run_id}.md", run.final_answer)
-    payload = _run_payload(run)
+    payload = _run_payload(run, debug=request.debug)
     payload["artifact"] = artifact_name
     return payload
 
@@ -388,20 +404,27 @@ def _require_api_token(request: Request, api_token: str | None) -> None:
         raise AgentAPIError(401, "AUTH_REQUIRED", "A valid bearer token is required.", "auth")
 
 
-def _run_payload(run: AgentRun) -> dict[str, object]:
-    return redact(
-        {
-            "run_id": run.run_id,
-            "request": run.request,
-            "plan": run.plan.model_dump(),
-            "plans": [plan.model_dump() for plan in run.plans],
-            "tool_results": [result.model_dump() for result in run.tool_results],
-            "final_answer": run.final_answer,
-            "step_count": run.step_count,
-            "stop_reason": run.stop_reason,
-            "events": [event.to_dict() for event in run.events],
-        }
-    )
+def _run_payload(run: AgentRun, debug: bool = False) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "run_id": run.run_id,
+        "request": run.request,
+        "final_answer": run.final_answer,
+        "step_count": run.step_count,
+        "stop_reason": run.stop_reason,
+        "tool_result_count": len(run.tool_results),
+        "tool_error_count": sum(1 for result in run.tool_results if result.error),
+        "tools": [result.name for result in run.tool_results],
+    }
+    if debug:
+        payload.update(
+            {
+                "plan": run.plan.model_dump(),
+                "plans": [plan.model_dump() for plan in run.plans],
+                "tool_results": [result.model_dump() for result in run.tool_results],
+                "events": [event.to_dict() for event in run.events],
+            }
+        )
+    return redact(payload)
 
 
 def _index_html() -> str:

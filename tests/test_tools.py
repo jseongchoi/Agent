@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -72,6 +73,36 @@ def test_load_table_enforces_file_size_limit(tmp_path: Path) -> None:
         assert "file size limit" in str(exc)
     else:
         raise AssertionError("Expected file size limit error.")
+
+
+def test_load_table_enforces_cell_limit(tmp_path: Path) -> None:
+    data = tmp_path / "cells.csv"
+    data.write_text("a,b\n1,2\n3,4\n", encoding="utf-8")
+
+    try:
+        load_table(str(data), max_cells=3)
+    except ValueError as exc:
+        assert "cell limit" in str(exc)
+    else:
+        raise AssertionError("Expected cell limit error.")
+
+
+def test_load_table_enforces_parser_timeout(tmp_path: Path, monkeypatch) -> None:
+    data = tmp_path / "slow.csv"
+    data.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    def slow_read_csv(*args, **kwargs):
+        time.sleep(0.05)
+        return pd.DataFrame([{"a": 1, "b": 2}])
+
+    monkeypatch.setattr("semicon_agent.tools.semiconductor.pd.read_csv", slow_read_csv)
+
+    try:
+        load_table(str(data), parser_timeout_s=0.001)
+    except ValueError as exc:
+        assert "parsing exceeded timeout" in str(exc)
+    else:
+        raise AssertionError("Expected parser timeout error.")
 
 
 def test_yield_summary_overall_and_by_wafer() -> None:

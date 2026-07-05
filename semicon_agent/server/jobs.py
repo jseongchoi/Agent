@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Lock
 from typing import Callable, Literal
 
@@ -39,10 +42,84 @@ class JobRecord:
         return payload
 
 
+class SQLiteJobMetadataStore:
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    def load_jobs(self) -> list[JobRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                select job_id, status, created_at, updated_at, result_json, error
+                from jobs
+                order by created_at desc
+                """
+            ).fetchall()
+        records = []
+        for row in rows:
+            result_json = row["result_json"]
+            records.append(
+                JobRecord(
+                    job_id=row["job_id"],
+                    status=row["status"],
+                    created_at=float(row["created_at"]),
+                    updated_at=float(row["updated_at"]),
+                    result=json.loads(result_json) if result_json else None,
+                    error=row["error"],
+                )
+            )
+        return records
+
+    def upsert(self, record: JobRecord) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                insert into jobs(job_id, status, created_at, updated_at, result_json, error)
+                values (?, ?, ?, ?, ?, ?)
+                on conflict(job_id) do update set
+                    status = excluded.status,
+                    updated_at = excluded.updated_at,
+                    result_json = excluded.result_json,
+                    error = excluded.error
+                """,
+                (
+                    record.job_id,
+                    record.status,
+                    record.created_at,
+                    record.updated_at,
+                    json.dumps(record.result, ensure_ascii=False, default=str) if record.result is not None else None,
+                    record.error,
+                ),
+            )
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                create table if not exists jobs(
+                    job_id text primary key,
+                    status text not null,
+                    created_at real not null,
+                    updated_at real not null,
+                    result_json text,
+                    error text
+                )
+                """
+            )
+
+
 class InMemoryJobStore:
-    def __init__(self, max_workers: int = 2) -> None:
+    def __init__(self, max_workers: int = 2, metadata_path: str | Path | None = None) -> None:
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="semicon-agent-job")
-        self._jobs: dict[str, JobRecord] = {}
+        self._metadata = SQLiteJobMetadataStore(metadata_path) if metadata_path is not None else None
+        self._jobs: dict[str, JobRecord] = self._load_persisted_jobs()
         self._lock = Lock()
 
     def submit(self, task: Callable[[], dict[str, object]]) -> JobRecord:
@@ -50,6 +127,7 @@ class InMemoryJobStore:
         record = JobRecord(job_id=str(uuid.uuid4()), status="queued", created_at=now, updated_at=now, task=task)
         with self._lock:
             self._jobs[record.job_id] = record
+            self._persist(record)
         future = self._executor.submit(self._run, record.job_id, task)
         with self._lock:
             record.future = future
@@ -123,3 +201,21 @@ class InMemoryJobStore:
                 record.result = result
             if error is not None:
                 record.error = error
+            self._persist(record)
+
+    def _load_persisted_jobs(self) -> dict[str, JobRecord]:
+        if self._metadata is None:
+            return {}
+        records = {}
+        for record in self._metadata.load_jobs():
+            if record.status in {"queued", "running"}:
+                record.status = "failed"
+                record.updated_at = time.time()
+                record.error = "Job was interrupted before completion."
+                self._metadata.upsert(record)
+            records[record.job_id] = record
+        return records
+
+    def _persist(self, record: JobRecord) -> None:
+        if self._metadata is not None:
+            self._metadata.upsert(record)

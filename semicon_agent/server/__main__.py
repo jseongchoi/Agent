@@ -14,6 +14,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8008)
     parser.add_argument("--session-db", default=str(settings.session_db))
+    parser.add_argument("--job-db", default=str(settings.job_db))
     parser.add_argument("--artifact-root", default=str(settings.artifact_root))
     parser.add_argument("--allow-root", action="append", default=[], help="Additional allowed data root.")
     parser.add_argument("--default-llm", choices=["mock", "open-model"], default="mock")
@@ -26,6 +27,7 @@ def main() -> None:
     uvicorn.run(
         create_app(
             session_db=args.session_db,
+            job_db=args.job_db,
             artifact_root=args.artifact_root,
             allowed_roots=settings.resolved_allowed_roots(extra_roots=tuple(args.allow_root)),
             default_llm=args.default_llm,

@@ -25,6 +25,8 @@ future open-model APIs.
 15. Job controls: background job polling, queued-job cancellation, failed-job retry.
 16. Observability export: trace events can be exported as span-like JSON.
 17. Eval CLI: deterministic agent scenario checks for CI.
+18. Durable job metadata: job status/result records persist in SQLite.
+19. Compact API payloads: detailed plan/tool/event payloads require `debug: true`.
 
 ## Core Features
 
@@ -42,7 +44,9 @@ future open-model APIs.
 - Serverless self-check command for CI or local validation
 - Optional bearer-token API boundary via `SEMICON_AGENT_API_TOKEN`
 - Upload content sniffing for text and Excel files
+- Chunked upload writes with cleanup on failed validation
 - Structured API error response with backward-compatible `detail`
+- Parser timeout, row/column/cell/file-size guards for table loading
 - Deterministic eval command for regression testing agent behavior
 
 ## Install
@@ -148,6 +152,8 @@ Server API defaults are intentionally local-first:
 - Detailed path status is hidden unless the server starts with `--debug-status`.
 - If `--api-token` or `SEMICON_AGENT_API_TOKEN` is set, `/api/*` requires a bearer token.
 - API errors include both `detail` and structured `error.code`, `error.category`, and `error.retryable`.
+- `/api/runs` and `/api/jobs` return compact result payloads by default. Pass `"debug": true` in the run request to include plans, tool results, and events.
+- Job metadata is persisted to SQLite. Use `--job-db` or `SEMICON_AGENT_JOB_DB` to choose the file.
 
 To run the server with a server-side open-model profile:
 
@@ -188,12 +194,13 @@ Input data expectations:
 - Common role columns: `lot_id`, `wafer_id`, `hard_bin`, `soft_bin`, `is_pass`, `pass`, `result`, `status`
 - If no pass/status column exists, `hard_bin == 1` or `soft_bin == 1` is treated as pass.
 - Numeric columns that are not obvious IDs/bins are treated as measurement columns.
-- Table loading enforces row and column limits to avoid accidental oversized parses.
+- Table loading enforces row, column, cell, parser timeout, and file-size limits to avoid accidental oversized parses.
 - Direct table loading also enforces a file size limit.
 
 Useful environment variables:
 
 - `SEMICON_AGENT_SESSION_DB`
+- `SEMICON_AGENT_JOB_DB`
 - `SEMICON_AGENT_ARTIFACT_ROOT`
 - `SEMICON_AGENT_ALLOWED_ROOTS`
 - `SEMICON_AGENT_MAX_STEPS`

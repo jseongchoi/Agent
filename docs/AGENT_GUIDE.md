@@ -626,6 +626,8 @@ client-side LLM/risk config guard, path field policy가 들어갔다.
 core v5에는 async job API, run detail endpoint, table row/column limit이 들어갔다.
 core v6에는 optional API token auth, structured error taxonomy, upload content sniffing,
 direct file size guard, job cancel/retry, span-like trace export, deterministic eval, CI가 들어갔다.
+core v7에는 SQLite job metadata persistence, compact API payload, parser timeout/cell budget,
+chunked upload write/cleanup이 들어갔다.
 
 ### 3-1-16. Semicon Agent에 적용할 설계 방향
 
@@ -676,6 +678,7 @@ semicon_agent/
 9. serverless self-check와 API guard 추가 - core v4 보강 완료
 10. async job/run status/table limit 추가 - core v5 보강 완료
 11. auth/error/upload/eval/CI 보강 - core v6 보강 완료
+12. durable job metadata/compact API/parser timeout 보강 - core v7 보강 완료
 
 반도체 분석 함수 자체는 나중 문제다. 중요한 것은 agent platform이 안전하고
 관찰 가능하며 교체 가능해야 한다는 점이다.
@@ -850,6 +853,9 @@ API server의 기본 정책은 local-first다.
 - 상세 경로 상태는 `--debug-status`를 명시한 경우에만 노출한다.
 - `SEMICON_AGENT_API_TOKEN` 또는 `--api-token`이 설정되면 `/api/*`는 bearer token을 요구한다.
 - API 오류는 `detail` 문자열과 함께 `error.code`, `error.category`, `error.retryable`을 반환한다.
+- `/api/runs`와 `/api/jobs` 결과는 기본 compact payload를 반환한다.
+- 상세 plan/tool/event payload가 필요하면 request body에 `debug: true`를 넣는다.
+- job status/result metadata는 SQLite job DB에 저장된다.
 
 운영자가 의도적으로 client-side LLM 설정을 허용하려면 다음 flag를 명시한다.
 
@@ -881,6 +887,7 @@ Authorization: Bearer change-me
 | 변수 | 역할 |
 | --- | --- |
 | `SEMICON_AGENT_SESSION_DB` | SQLite run/session DB path |
+| `SEMICON_AGENT_JOB_DB` | SQLite job metadata DB path |
 | `SEMICON_AGENT_ARTIFACT_ROOT` | artifact 저장 root |
 | `SEMICON_AGENT_API_TOKEN` | `/api/*` bearer token |
 | `SEMICON_AGENT_ALLOWED_ROOTS` | 추가 data root 목록. OS path separator로 구분 |
@@ -1099,10 +1106,11 @@ python -m pytest -p no:cacheprovider
 - path 기반 tool이 `ToolRegistry.run()`으로 policy 없이 직접 실행되지 않는지
 - LLM planning/synthesis 실패가 SQLite에 `failed` 상태로 저장되는지
 - artifact path escape, unsupported upload, malformed upload content가 거부되는지
-- direct table file size limit이 적용되는지
+- direct table row/column/cell/file-size/parser-timeout limit이 적용되는지
 - API status, upload, run, trace, otel export, artifact download가 동작하는지
 - API token auth와 structured error payload가 동작하는지
-- API job 생성, 상태 조회, 실패 상태, queued cancellation, failed retry가 동작하는지
+- API compact/debug payload가 동작하는지
+- API job 생성, 상태 조회, 실패 상태, queued cancellation, failed retry, metadata persistence가 동작하는지
 - client-side LLM config와 risk approval이 기본 차단되는지
 - serverless self-check가 end-to-end로 동작하는지
 - deterministic eval suite가 핵심 agent 시나리오를 검증하는지
@@ -1119,6 +1127,7 @@ python -m pytest -p no:cacheprovider
 - LLM failure persistence - core v4 보강 완료
 - table row/column limit - core v5 보강 완료
 - direct file size limit - core v6 보강 완료
+- parser timeout/cell budget - core v7 보강 완료
 - structured error taxonomy - core v6 보강 완료
 - run history 저장 - core v1 완료
 - deterministic eval suite - core v6 보강 완료
@@ -1140,6 +1149,7 @@ python -m pytest -p no:cacheprovider
 - uploaded dataset registry - core v3 기본 upload 완료
 - self-check artifact - core v4 보강 완료
 - upload content sniffing - core v6 보강 완료
+- chunked upload write/cleanup - core v7 보강 완료
 - previous analysis context option - core v6 보강 완료
 - searchable memory policy
 
@@ -1151,6 +1161,7 @@ python -m pytest -p no:cacheprovider
 - retryable tool node
 - long-running job support - core v5 보강 완료
 - queued job cancellation / failed job retry - core v6 보강 완료
+- SQLite job metadata persistence - core v7 보강 완료
 - durable resumable workflow
 
 ### Phase 5. Production interface
@@ -1165,6 +1176,7 @@ python -m pytest -p no:cacheprovider
 - run status endpoint - core v5 보강 완료
 - span-like trace export - core v6 보강 완료
 - optional bearer token auth boundary - core v6 보강 완료
+- compact API payload with debug detail - core v7 보강 완료
 - durable worker / persistent queue
 - role-based auth boundary
 - audit log
@@ -1180,8 +1192,9 @@ python -m pytest -p no:cacheprovider
 - SPC chart data
 - recipe/process comparison
 
-현재 repository는 core v6 prototype에 해당한다. Agent runtime의 기본 골격, API/UI,
-artifact, self-check, eval, 보안 기본값, job 제어, trace export는 들어갔지만 production platform은 아니다.
+현재 repository는 core v7 prototype에 해당한다. Agent runtime의 기본 골격, API/UI,
+artifact, self-check, eval, 보안 기본값, job 제어, trace export, parser guard, job metadata persistence는
+들어갔지만 production platform은 아니다.
 
 ## 15. 운영 기준
 

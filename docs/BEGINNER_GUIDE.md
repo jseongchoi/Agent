@@ -296,6 +296,8 @@ API server의 기본 보안 정책은 다음과 같다.
 - 상세 경로 상태는 `--debug-status`를 명시해야만 나온다.
 - `SEMICON_AGENT_API_TOKEN` 또는 `--api-token`이 설정되면 `/api/*`는 bearer token을 요구한다.
 - API 오류는 `detail`과 함께 `error.code`, `error.category`, `error.retryable`을 반환한다.
+- run/job 응답은 기본적으로 compact payload다. plan, tool result, event까지 보려면 request body에 `debug: true`를 넣는다.
+- job status/result metadata는 SQLite job DB에 저장된다.
 
 이 정책은 이 프로젝트가 localhost prototype이어도 나중에 네트워크에 노출될 가능성을
 고려한 기본 방어선이다.
@@ -303,6 +305,7 @@ API server의 기본 보안 정책은 다음과 같다.
 긴 실행은 `/api/jobs`를 쓰는 것이 낫다. `/api/runs`는 요청 안에서 바로 실행하고
 결과를 반환한다. `/api/jobs`는 `202 Accepted`와 `job_id`를 먼저 반환하고,
 `GET /api/jobs/{job_id}`로 `queued`, `running`, `completed`, `failed`, `cancelled` 상태를 확인한다.
+서버를 다시 띄워도 완료/실패 job metadata는 `SEMICON_AGENT_JOB_DB`에 남아 조회할 수 있다.
 
 ## 10. MockLLM과 OpenModelLLM의 차이
 
@@ -666,9 +669,9 @@ python -m semicon_agent.server --allow-client-llm-config
 
 ### 16-5. Excel 파일이 느리다
 
-현재 demo tool은 pandas/openpyxl로 파일 전체를 읽는다. row/column/file-size limit과
-upload content sniffing은 들어갔지만, production 수준의 streaming upload와 parser
-timeout은 아직 필요하다. 실제 업무에서는 CSV/parquet 변환, parser timeout, cell budget을
+현재 demo tool은 pandas/openpyxl로 파일 전체를 읽는다. row/column/cell/file-size limit,
+parser timeout, upload content sniffing, chunked upload write는 들어갔다. 다만 production
+수준에서는 parser를 별도 process로 격리하고, CSV/parquet 변환과 형식별 parser profile을
 추가하는 것이 좋다.
 
 ## 17. 현재 구현의 한계
@@ -684,7 +687,7 @@ timeout은 아직 필요하다. 실제 업무에서는 CSV/parquet 변환, parse
 - resumable workflow
 - long-term semantic memory
 - deep redaction for remote LLM payloads
-- upload streaming/parser timeout
+- process-isolated parser kill
 
 따라서 현재 코드는 "Agent framework prototype"으로 보고, 실제 업무 적용 전에는 보안,
 성능, 인증, 분석 정확도, 운영 관측성을 추가로 hardening해야 한다.
@@ -697,7 +700,7 @@ timeout은 아직 필요하다. 실제 업무에서는 CSV/parquet 변환, parse
 2. Run/job status endpoint 확장: progress와 running-job cooperative cancellation을 추가한다.
 3. True streaming: SSE 또는 WebSocket으로 token/tool event를 실시간 전송한다.
 4. Deep redaction: remote LLM에 보낼 payload를 tool별 summary로 제한한다.
-5. Upload hardening: streaming upload, parser timeout, cell budget을 넣는다.
+5. Upload hardening: process-isolated parser kill, per-format parser profile을 넣는다.
 6. Auth boundary: API server에 사용자/역할 기반 권한을 둔다.
 7. Workflow graph: long-running/resumable approval이 가능한 graph executor를 만든다.
 8. Semiconductor tool pack: wafer map, bin pareto, lot trend, recipe comparison을 추가한다.
