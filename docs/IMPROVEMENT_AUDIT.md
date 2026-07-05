@@ -1,6 +1,6 @@
 # Semicon Agent Improvement Audit
 
-This document records the empirical audit performed after core v10. It separates
+This document records the empirical audit performed after core v11. It separates
 items that were fixed immediately from items that remain as engineering backlog.
 
 ## Verification Matrix
@@ -11,7 +11,7 @@ The following checks were run against the repository:
 | --- | --- |
 | `python -m pip install -e ".[dev]"` | Passed |
 | `python -m pip check` | Passed |
-| `python -m pytest -p no:cacheprovider` | Passed, 67 tests |
+| `python -m pytest -p no:cacheprovider` | Passed, 69 tests |
 | `python -m semicon_agent.self_check --data examples/sample_wafer.csv` | Passed |
 | `python -m semicon_agent.eval` | Passed |
 | `semicon-agent-check --data examples/sample_wafer.csv` | Passed after editable reinstall |
@@ -49,6 +49,7 @@ The following checks were run against the repository:
 | Remote LLM payload minimization | Open-model synthesis received full tool outputs. | Added tool-result summaries before outbound LLM synthesis. |
 | Parser isolation | Parser timeout could raise to caller but not kill the parser work. | Added optional subprocess parser mode with timeout-based process kill. |
 | Job restart recovery | Queued/running jobs with persisted metadata were marked failed after API restart. | Persisted compact request payloads and re-enqueue interrupted jobs on app startup. |
+| Running job control | Running jobs ignored cancel requests until completion. | Added cooperative cancellation tokens, persisted cancel requests, and progress metadata. |
 
 ## Current Strengths
 
@@ -68,6 +69,7 @@ The following checks were run against the repository:
 - Queued-job cancellation and failed-job retry.
 - SQLite-backed job status/result metadata.
 - Queued/running job restart recovery from persisted request payloads.
+- Cooperative running-job cancellation and progress metadata.
 - Compact API result payloads with opt-in debug detail.
 - Span-like trace export for observability integrations.
 - Deterministic eval CLI for CI.
@@ -87,7 +89,7 @@ production-like platform.
 | P0 | Auth boundary | Add audit identity, expiry/rotation, and deployment-grade auth middleware. | Role tokens exist, but they are not enterprise identity. |
 | P0 | Upload hardening | Add deeper Excel protections and per-format parser sandbox profiles. | Upload chunking, content sniffing, parser timeout, cell budget, and optional process parsing exist. |
 | P0 | Remote LLM policy | Add tool-level outbound allowlists, tenant policies, and stricter field controls. | Summaries exist, but policy is not configurable per deployment. |
-| P1 | Job operations | Add running-job cooperative cancellation, progress events, and timeout policy. | Queued cancellation and retry exist; running jobs still finish normally. |
+| P1 | Job operations | Add job timeout policy and richer progress events. | Cooperative cancellation and basic progress metadata exist; hard timeouts are still missing. |
 | P1 | True streaming | Implement provider streaming and SSE/WebSocket event delivery. | Current `stream` path is streaming-ready but returns one final JSON response. |
 | P1 | Strong parser limits | Make process parser mode the deployment default where appropriate and add per-format parser profiles. | Process mode exists, but default remains thread mode for local speed. |
 | P1 | Tool result contracts | Define typed result models for major tools. | Reduces downstream assumptions and makes LLM summaries safer. |

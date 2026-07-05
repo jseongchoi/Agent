@@ -6,6 +6,7 @@ from typing import Any
 
 from semicon_agent.core.approval import ApprovalProvider
 from semicon_agent.config import validate_max_steps
+from semicon_agent.core.cancellation import AgentCancelledError, CancellationToken
 from semicon_agent.llm.base import BaseLLM
 from semicon_agent.models import AgentPlan, ToolResult
 from semicon_agent.core.policy import ExecutionPolicy, RiskLevel
@@ -49,6 +50,7 @@ class SemiconductorAgent:
         approval_provider: ApprovalProvider | None = None,
         max_steps: int = 1,
         stream: bool = False,
+        cancellation_token: CancellationToken | None = None,
         **context: Any,
     ) -> AgentRun:
         validate_max_steps(max_steps)
@@ -70,6 +72,17 @@ class SemiconductorAgent:
         if self.run_store:
             self.run_store.save_run_start(trace.run_id, user_request, run_context)
         trace.emit("run.start", "Agent run started.", request=user_request, context=run_context, max_steps=max_steps)
+
+        def check_cancelled() -> None:
+            if cancellation_token is None:
+                return
+            try:
+                cancellation_token.raise_if_cancelled()
+            except AgentCancelledError as exc:
+                self._persist_cancelled(trace, exc)
+                raise
+
+        check_cancelled()
         plans: list[AgentPlan] = []
         tool_results: list[ToolResult] = []
         stop_reason = "max_steps"
@@ -81,6 +94,7 @@ class SemiconductorAgent:
             approval_provider=approval_provider,
         )
         for step_index in range(max_steps):
+            check_cancelled()
             step_context = {
                 **run_context,
                 "step_index": step_index,
@@ -90,6 +104,8 @@ class SemiconductorAgent:
             trace.emit("llm.plan.start", "Requesting plan from LLM.", step_index=step_index)
             try:
                 plan = self.llm.plan(user_request, self.registry.list(), step_context)
+            except AgentCancelledError:
+                raise
             except Exception as exc:
                 self._persist_failure(trace, exc)
                 raise
@@ -116,6 +132,7 @@ class SemiconductorAgent:
 
             step_results: list[ToolResult] = []
             for call in plan.tool_calls:
+                check_cancelled()
                 arguments = dict(call.arguments)
                 if data_path:
                     try:
@@ -129,6 +146,7 @@ class SemiconductorAgent:
                             if field in tool.parameters.get("properties", {}):
                                 arguments[field] = data_path
                 step_results.append(runtime.run(call.name, arguments))
+                check_cancelled()
             tool_results.extend(step_results)
 
             if any(result.error for result in step_results):
@@ -136,6 +154,7 @@ class SemiconductorAgent:
                 break
 
         if tool_results:
+            check_cancelled()
             trace.emit("llm.synthesis.start", "Requesting final synthesis from LLM.")
             try:
                 if stream:
@@ -146,11 +165,15 @@ class SemiconductorAgent:
                     else:
                         iterator = stream_synthesize(user_request, tool_results, run_context)
                         for chunk in iterator:
+                            check_cancelled()
                             trace.emit("llm.stream.chunk", "Received synthesis stream chunk.", event=chunk.event, done=chunk.done)
                             chunks.append(chunk.content)
                     final_answer = "".join(chunks)
                 else:
+                    check_cancelled()
                     final_answer = self.llm.synthesize(user_request, tool_results, run_context)
+            except AgentCancelledError:
+                raise
             except Exception as exc:
                 self._persist_failure(trace, exc)
                 raise
@@ -177,6 +200,17 @@ class SemiconductorAgent:
             step_count=len(plans),
             stop_reason=stop_reason,
         )
+
+    def _persist_cancelled(self, trace: TraceRecorder, exc: AgentCancelledError) -> None:
+        trace.emit(
+            "run.cancelled",
+            "Agent run was cancelled.",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        if self.run_store:
+            self.run_store.save_events(trace.events)
+            self.run_store.save_run_end(trace.run_id, f"CANCELLED: {exc}", status="cancelled")
 
     def _persist_failure(self, trace: TraceRecorder, exc: Exception) -> None:
         trace.emit(

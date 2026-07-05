@@ -429,6 +429,39 @@ def test_job_endpoint_can_cancel_queued_job(tmp_path: Path, monkeypatch) -> None
     assert cancelled.json()["status"] == "cancelled"
 
 
+def test_job_endpoint_can_cancel_running_job_cooperatively(tmp_path: Path, monkeypatch) -> None:
+    started = Event()
+
+    def cancellable_execute(*args, cancellation_token=None, **kwargs):
+        assert cancellation_token is not None
+        started.set()
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            cancellation_token.raise_if_cancelled()
+            time.sleep(0.01)
+        return {"run_id": "too-late", "final_answer": "done", "artifact": "reports/too-late.md"}
+
+    monkeypatch.setattr("semicon_agent.server.api._execute_run_request", cancellable_execute)
+    client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
+
+    created = client.post("/api/jobs", json={"request": "analyze yield", "data_path": str(DATA_PATH)})
+    assert created.status_code == 202
+    assert started.wait(timeout=2)
+
+    running = client.get(f"/api/jobs/{created.json()['job_id']}")
+    assert running.status_code == 200
+    assert running.json()["status"] == "running"
+    assert running.json()["progress"]["stage"] == "running"
+
+    cancelled = client.delete(f"/api/jobs/{created.json()['job_id']}")
+    assert cancelled.status_code == 202
+    assert cancelled.json()["cancel_requested"] is True
+
+    terminal = _wait_for_job(client, created.json()["job_id"])
+    assert terminal["status"] == "cancelled"
+    assert terminal["progress"]["stage"] == "cancelled"
+
+
 def test_missing_job_and_run_return_404(tmp_path: Path) -> None:
     client = TestClient(create_app(session_db=tmp_path / "runs.sqlite", artifact_root=tmp_path / "artifacts"))
 

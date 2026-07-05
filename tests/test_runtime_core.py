@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from semicon_agent.core.agent import SemiconductorAgent
+from semicon_agent.core.cancellation import AgentCancelledError, CancellationToken
 from semicon_agent.core.policy import ExecutionPolicy
 from semicon_agent.core.session import SQLiteRunStore
 from semicon_agent.llm.open_model import OpenModelLLM
@@ -207,6 +208,27 @@ def test_failed_synthesis_is_persisted(tmp_path: Path) -> None:
     assert "synthesis failed" in runs[0]["final_answer"]
     assert any(event["event_type"] == "tool.end" for event in events)
     assert any(event["event_type"] == "run.error" for event in events)
+
+
+def test_cancelled_run_is_persisted(tmp_path: Path) -> None:
+    store = SQLiteRunStore(tmp_path / "runs.sqlite")
+    agent = SemiconductorAgent(
+        llm=StaticLLM(AgentPlan(tool_calls=[ToolCall(name="yield_summary")])),
+        run_store=store,
+    )
+
+    with pytest.raises(AgentCancelledError):
+        agent.run(
+            "yield",
+            data_path=str(DATA_PATH),
+            cancellation_token=CancellationToken(lambda: True),
+        )
+
+    runs = store.list_runs()
+    events = store.get_events(runs[0]["run_id"])
+    assert runs[0]["status"] == "cancelled"
+    assert "CANCELLED" in runs[0]["final_answer"]
+    assert any(event["event_type"] == "run.cancelled" for event in events)
 
 
 def test_open_model_endpoint_policy() -> None:

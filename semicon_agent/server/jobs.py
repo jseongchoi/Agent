@@ -7,13 +7,37 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 from typing import Callable, Literal
+
+from semicon_agent.core.cancellation import AgentCancelledError, CancellationToken
 
 
 JobStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
-JobTask = Callable[[], dict[str, object]]
+JobTask = Callable[["JobControl"], dict[str, object]]
 JobTaskFactory = Callable[[dict[str, object]], JobTask]
+
+
+class JobCancelledError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class JobControl:
+    cancel_event: Event
+    report_progress: Callable[[dict[str, object]], None]
+
+    @property
+    def cancellation_token(self) -> CancellationToken:
+        return CancellationToken(self.cancel_event.is_set)
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancel_event.is_set():
+            raise JobCancelledError("Job was cancelled.")
+
+    def progress(self, stage: str, message: str, **fields: object) -> None:
+        payload = {"stage": stage, "message": message, **fields}
+        self.report_progress(payload)
 
 
 @dataclass
@@ -25,8 +49,15 @@ class JobRecord:
     result: dict[str, object] | None = None
     error: str | None = None
     payload: dict[str, object] | None = None
+    progress: dict[str, object] | None = None
+    cancel_requested: bool = False
     future: Future | None = field(default=None, repr=False)
     task: JobTask | None = field(default=None, repr=False)
+    cancel_event: Event = field(default_factory=Event, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.cancel_requested:
+            self.cancel_event.set()
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -34,7 +65,10 @@ class JobRecord:
             "status": self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "cancel_requested": self.cancel_requested,
         }
+        if self.progress is not None:
+            payload["progress"] = self.progress
         if self.result is not None:
             payload["result"] = self.result
             run_id = self.result.get("run_id")
@@ -55,7 +89,8 @@ class SQLiteJobMetadataStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                select job_id, status, created_at, updated_at, result_json, error, payload_json
+                select job_id, status, created_at, updated_at, result_json, error,
+                       payload_json, progress_json, cancel_requested
                 from jobs
                 order by created_at desc
                 """
@@ -64,6 +99,7 @@ class SQLiteJobMetadataStore:
         for row in rows:
             result_json = row["result_json"]
             payload_json = row["payload_json"]
+            progress_json = row["progress_json"]
             records.append(
                 JobRecord(
                     job_id=row["job_id"],
@@ -73,6 +109,8 @@ class SQLiteJobMetadataStore:
                     result=json.loads(result_json) if result_json else None,
                     error=row["error"],
                     payload=json.loads(payload_json) if payload_json else None,
+                    progress=json.loads(progress_json) if progress_json else None,
+                    cancel_requested=bool(row["cancel_requested"]),
                 )
             )
         return records
@@ -81,14 +119,19 @@ class SQLiteJobMetadataStore:
         with self._connect() as conn:
             conn.execute(
                 """
-                insert into jobs(job_id, status, created_at, updated_at, result_json, error, payload_json)
-                values (?, ?, ?, ?, ?, ?, ?)
+                insert into jobs(
+                    job_id, status, created_at, updated_at, result_json, error,
+                    payload_json, progress_json, cancel_requested
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(job_id) do update set
                     status = excluded.status,
                     updated_at = excluded.updated_at,
                     result_json = excluded.result_json,
                     error = excluded.error,
-                    payload_json = excluded.payload_json
+                    payload_json = excluded.payload_json,
+                    progress_json = excluded.progress_json,
+                    cancel_requested = excluded.cancel_requested
                 """,
                 (
                     record.job_id,
@@ -98,6 +141,8 @@ class SQLiteJobMetadataStore:
                     json.dumps(record.result, ensure_ascii=False, default=str) if record.result is not None else None,
                     record.error,
                     json.dumps(record.payload, ensure_ascii=False, default=str) if record.payload is not None else None,
+                    json.dumps(record.progress, ensure_ascii=False, default=str) if record.progress is not None else None,
+                    1 if record.cancel_requested else 0,
                 ),
             )
 
@@ -117,13 +162,19 @@ class SQLiteJobMetadataStore:
                     updated_at real not null,
                     result_json text,
                     error text,
-                    payload_json text
+                    payload_json text,
+                    progress_json text,
+                    cancel_requested integer not null default 0
                 )
                 """
             )
             columns = {row["name"] for row in conn.execute("pragma table_info(jobs)").fetchall()}
             if "payload_json" not in columns:
                 conn.execute("alter table jobs add column payload_json text")
+            if "progress_json" not in columns:
+                conn.execute("alter table jobs add column progress_json text")
+            if "cancel_requested" not in columns:
+                conn.execute("alter table jobs add column cancel_requested integer not null default 0")
 
 
 class InMemoryJobStore:
@@ -148,6 +199,7 @@ class InMemoryJobStore:
             created_at=now,
             updated_at=now,
             payload=payload,
+            progress={"stage": "queued", "message": "Job is queued."},
             task=task,
         )
         self._enqueue(record, task)
@@ -155,6 +207,7 @@ class InMemoryJobStore:
 
     def _enqueue(self, record: JobRecord, task: JobTask) -> None:
         with self._lock:
+            record.task = task
             self._jobs[record.job_id] = record
             self._persist(record)
         future = self._executor.submit(self._run, record.job_id, task)
@@ -185,9 +238,19 @@ class InMemoryJobStore:
             if record.status in {"completed", "failed", "cancelled"}:
                 return False
             future = record.future
-        if future is None or not future.cancel():
-            return False
-        self._update(job_id, status="cancelled", error="Job was cancelled before execution.")
+            record.cancel_requested = True
+            record.cancel_event.set()
+            record.progress = {"stage": "cancelling", "message": "Cancellation requested."}
+            record.updated_at = time.time()
+            self._persist(record)
+        if future is not None and future.cancel():
+            self._update(
+                job_id,
+                status="cancelled",
+                error="Job was cancelled before execution.",
+                progress={"stage": "cancelled", "message": "Job was cancelled before execution."},
+                cancel_requested=True,
+            )
         return True
 
     def retry(self, job_id: str) -> JobRecord | None:
@@ -207,13 +270,31 @@ class InMemoryJobStore:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _run(self, job_id: str, task: JobTask) -> None:
-        self._update(job_id, status="running")
+        control = self._control_for(job_id)
+        self._update(job_id, status="running", progress={"stage": "running", "message": "Job started."})
         try:
-            result = task()
+            control.raise_if_cancelled()
+            result = task(control)
+            control.raise_if_cancelled()
+        except (AgentCancelledError, JobCancelledError) as exc:
+            self._update(
+                job_id,
+                status="cancelled",
+                error=str(exc),
+                progress={"stage": "cancelled", "message": str(exc)},
+                cancel_requested=True,
+            )
+            return
         except Exception as exc:
             self._update(job_id, status="failed", error=str(exc))
             return
-        self._update(job_id, status="completed", result=result)
+        self._update(
+            job_id,
+            status="completed",
+            result=result,
+            progress={"stage": "completed", "message": "Job completed."},
+            cancel_requested=False,
+        )
 
     def _update(
         self,
@@ -221,6 +302,8 @@ class InMemoryJobStore:
         status: JobStatus,
         result: dict[str, object] | None = None,
         error: str | None = None,
+        progress: dict[str, object] | None = None,
+        cancel_requested: bool | None = None,
     ) -> None:
         with self._lock:
             record = self._jobs[job_id]
@@ -230,6 +313,12 @@ class InMemoryJobStore:
                 record.result = result
             if error is not None:
                 record.error = error
+            if progress is not None:
+                record.progress = progress
+            if cancel_requested is not None:
+                record.cancel_requested = cancel_requested
+                if cancel_requested:
+                    record.cancel_event.set()
             self._persist(record)
 
     def _load_persisted_jobs(self) -> None:
@@ -237,11 +326,20 @@ class InMemoryJobStore:
             return
         for record in self._metadata.load_jobs():
             if record.status in {"queued", "running"}:
+                if record.cancel_requested:
+                    record.status = "cancelled"
+                    record.updated_at = time.time()
+                    record.error = "Job was cancelled before restart recovery."
+                    record.progress = {"stage": "cancelled", "message": record.error}
+                    self._metadata.upsert(record)
+                    self._jobs[record.job_id] = record
+                    continue
                 task = self._task_from_payload(record.payload)
                 if task is not None:
                     record.status = "queued"
                     record.updated_at = time.time()
                     record.error = None
+                    record.progress = {"stage": "queued", "message": "Job was restored after restart."}
                     record.task = task
                     self._enqueue(record, task)
                     continue
@@ -255,6 +353,21 @@ class InMemoryJobStore:
         if payload is None or self._task_factory is None:
             return None
         return self._task_factory(payload)
+
+    def _control_for(self, job_id: str) -> JobControl:
+        with self._lock:
+            cancel_event = self._jobs[job_id].cancel_event
+        return JobControl(
+            cancel_event=cancel_event,
+            report_progress=lambda progress: self._update_progress(job_id, progress),
+        )
+
+    def _update_progress(self, job_id: str, progress: dict[str, object]) -> None:
+        with self._lock:
+            record = self._jobs[job_id]
+            record.progress = progress
+            record.updated_at = time.time()
+            self._persist(record)
 
     def _persist(self, record: JobRecord) -> None:
         if self._metadata is not None:

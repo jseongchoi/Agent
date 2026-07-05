@@ -32,6 +32,8 @@ def test_job_metadata_store_migrates_legacy_schema(tmp_path: Path) -> None:
             created_at=now,
             updated_at=now,
             payload={"request": "analyze yield", "max_steps": 3},
+            progress={"stage": "queued", "message": "Queued."},
+            cancel_requested=True,
         )
     )
 
@@ -39,3 +41,5 @@ def test_job_metadata_store_migrates_legacy_schema(tmp_path: Path) -> None:
 
     assert records[0].job_id == "legacy-job"
     assert records[0].payload == {"request": "analyze yield", "max_steps": 3}
+    assert records[0].progress == {"stage": "queued", "message": "Queued."}
+    assert records[0].cancel_requested is True

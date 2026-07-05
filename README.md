@@ -22,7 +22,7 @@ future open-model APIs.
 12. Self-check: serverless end-to-end health check.
 13. Optional API auth: bearer token gate for `/api/*` routes.
 14. Structured errors: stable `error.code/category/retryable` payloads.
-15. Job controls: background job polling, queued-job cancellation, failed-job retry.
+15. Job controls: background job polling, queued/running-job cancellation, failed-job retry.
 16. Observability export: trace events can be exported as span-like JSON.
 17. Eval CLI: deterministic agent scenario checks for CI.
 18. Durable job records: job status/result records and resumable request payloads persist in SQLite.
@@ -55,6 +55,7 @@ future open-model APIs.
 - Deterministic eval command for regression testing agent behavior
 - Minimized tool-result payloads for remote/open-model synthesis
 - Restart recovery for queued/running API jobs when their request payload was persisted
+- Cooperative running-job cancellation and job progress metadata
 
 ## Install
 
@@ -172,6 +173,7 @@ Server API defaults are intentionally local-first:
 - `/api/runs` and `/api/jobs` return compact result payloads by default. Pass `"debug": true` in the run request to include plans, tool results, and events.
 - Job metadata and resumable request payloads are persisted to SQLite. Use `--job-db` or `SEMICON_AGENT_JOB_DB` to choose the file.
 - On server startup, persisted `queued`/`running` jobs with payloads are re-enqueued. Protect the job DB if client-provided LLM API keys are enabled.
+- `DELETE /api/jobs/{job_id}` cancels queued jobs immediately and requests cooperative cancellation for running jobs. Job responses include `progress` and `cancel_requested`.
 
 To run the server with a server-side open-model profile:
 

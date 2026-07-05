@@ -34,7 +34,7 @@
 | Human-in-the-loop | 위험 작업 전 승인/거절/수정 가능 | CLI approval provider |
 | Persistence | run, event, artifact를 저장해 재현 가능하게 함 | SQLite run store, artifact store |
 | Async execution | 긴 작업을 background job으로 실행 | `/api/jobs` |
-| Job controls | 실패/대기/재시작 작업을 제어 | cancel/retry/resume 추가 |
+| Job controls | 실패/대기/실행/재시작 작업을 제어 | cancel/retry/resume/progress 추가 |
 | Observability | 실행 과정을 trace로 확인 | event trace, span-like export |
 | Security | LLM/tool/API 경계를 기본 차단 | client LLM/risk 차단, token auth |
 | Evals | 에이전트 동작을 자동 회귀 검증 | `semicon_agent.eval` |
@@ -62,6 +62,7 @@
 | 완료 | Remote LLM payload minimization | `semicon_agent/llm/privacy.py`, `llm/open_model.py` | privacy/open-model tests |
 | 완료 | Process-isolated parser mode | `semicon_agent/tools/table_parser.py`, `tools/semiconductor.py` | process parser success/timeout tests |
 | 완료 | Resumable persisted jobs | `semicon_agent/server/jobs.py`, `server/api.py` | queued/running resume and persisted retry tests |
+| 완료 | Running job cooperative cancellation | `core/cancellation.py`, `core/agent.py`, `server/jobs.py` | running cancel and cancelled-run persistence tests |
 
 ## 아직 남은 고우선순위 TODO
 
@@ -74,6 +75,7 @@
 | P0 | Full upload streaming | API는 chunk write와 process parser mode를 지원하지만, Excel 검증은 여전히 로컬 파일 archive 전체를 검사한다. |
 | P0 | Remote LLM policy controls | payload 요약은 들어갔지만 tool별 outbound allowlist와 tenant별 정책은 없다. |
 | P1 | True SSE/WebSocket streaming | 현재 streaming-ready path는 있지만 HTTP 실시간 이벤트가 아니다. |
+| P1 | Job timeout policy | running job 취소 요청은 cooperative하게 처리되지만, hard timeout 정책은 없다. |
 | P1 | Durable human approval | approval 후 resume 가능한 checkpoint runtime이 필요하다. |
 | P1 | Provider adapters | Ollama, vLLM, LM Studio, OpenRouter 등 provider별 adapter가 필요하다. |
 | P1 | Tool result typed contracts | 주요 tool 결과를 Pydantic model로 고정하면 UI/LLM 요약 안정성이 좋아진다. |
@@ -83,7 +85,7 @@
 
 현재 코드는 “반도체 데이터 분석 업무용 에이전트 프레임워크의 강한 프로토타입”이다.
 기능 데모 수준을 넘어 agent runtime, 정책, trace, artifact, API, job metadata persistence,
-queued/running job resume, parser guard, eval, CI까지 들어갔다.
+queued/running job resume, running job cooperative cancellation, parser guard, eval, CI까지 들어갔다.
 
 다만 “최고 수준 production agent platform”이라고 부르려면 durable worker execution, enterprise auth,
 streaming transport, provider ecosystem, per-format parser sandbox policy, remote LLM policy controls가 더 필요하다.

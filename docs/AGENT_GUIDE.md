@@ -631,6 +631,7 @@ chunked upload write/cleanup이 들어갔다.
 core v8에는 role-based API tokens와 remote LLM payload minimization이 들어갔다.
 core v9에는 optional process-isolated parser mode가 들어갔다.
 core v10에는 queued/running job payload persistence와 restart resume이 들어갔다.
+core v11에는 running job cooperative cancellation과 progress metadata가 들어갔다.
 
 ### 3-1-16. Semicon Agent에 적용할 설계 방향
 
@@ -685,6 +686,7 @@ semicon_agent/
 13. RBAC token/remote LLM payload minimization 보강 - core v8 보강 완료
 14. process-isolated parser mode 보강 - core v9 보강 완료
 15. queued/running job restart resume 보강 - core v10 보강 완료
+16. running job cooperative cancellation/progress 보강 - core v11 보강 완료
 
 반도체 분석 함수 자체는 나중 문제다. 중요한 것은 agent platform이 안전하고
 관찰 가능하며 교체 가능해야 한다는 점이다.
@@ -848,7 +850,7 @@ python -m semicon_agent.server --host 127.0.0.1 --port 8008 --allow-root example
 | `POST /api/jobs` | background job 생성 |
 | `GET /api/jobs` | 최근 job 목록 |
 | `GET /api/jobs/{job_id}` | job 상태 조회 |
-| `DELETE /api/jobs/{job_id}` | queued job 취소 |
+| `DELETE /api/jobs/{job_id}` | queued job 취소 또는 running job cooperative cancellation 요청 |
 | `POST /api/jobs/{job_id}/retry` | failed/cancelled job 재시도 |
 
 API server의 기본 정책은 local-first다.
@@ -864,6 +866,8 @@ API server의 기본 정책은 local-first다.
 - 상세 plan/tool/event payload가 필요하면 request body에 `debug: true`를 넣는다.
 - job status/result metadata와 재시작 복구용 request payload는 SQLite job DB에 저장된다.
 - 서버 시작 시 payload가 남아 있는 `queued`/`running` job은 같은 `job_id`로 다시 실행 큐에 들어간다.
+- job 응답에는 `progress`와 `cancel_requested`가 포함된다.
+- running job 취소는 강제 thread kill이 아니라 agent loop의 안전 경계에서 멈추는 cooperative cancellation이다.
 
 운영자가 의도적으로 client-side LLM 설정을 허용하려면 다음 flag를 명시한다.
 
@@ -1133,7 +1137,7 @@ python -m pytest -p no:cacheprovider
 - API token auth와 structured error payload가 동작하는지
 - read/write role token이 API route를 제한하는지
 - API compact/debug payload가 동작하는지
-- API job 생성, 상태 조회, 실패 상태, queued cancellation, failed retry, metadata persistence, queued/running resume이 동작하는지
+- API job 생성, 상태 조회, 실패 상태, queued/running cancellation, failed retry, metadata persistence, queued/running resume이 동작하는지
 - client-side LLM config와 risk approval이 기본 차단되는지
 - serverless self-check가 end-to-end로 동작하는지
 - deterministic eval suite가 핵심 agent 시나리오를 검증하는지
@@ -1188,6 +1192,7 @@ python -m pytest -p no:cacheprovider
 - queued job cancellation / failed job retry - core v6 보강 완료
 - SQLite job metadata persistence - core v7 보강 완료
 - queued/running job restart resume - core v10 보강 완료
+- running job cooperative cancellation / progress metadata - core v11 보강 완료
 - durable resumable workflow
 
 ### Phase 5. Production interface
@@ -1200,6 +1205,7 @@ python -m pytest -p no:cacheprovider
 - background worker
 - in-memory background job API - core v5 보강 완료
 - persisted job payload resume - core v10 보강 완료
+- running job cooperative cancellation / progress metadata - core v11 보강 완료
 - run status endpoint - core v5 보강 완료
 - span-like trace export - core v6 보강 완료
 - optional bearer token auth boundary - core v6 보강 완료
@@ -1220,9 +1226,10 @@ python -m pytest -p no:cacheprovider
 - SPC chart data
 - recipe/process comparison
 
-현재 repository는 core v10 prototype에 해당한다. Agent runtime의 기본 골격, API/UI,
+현재 repository는 core v11 prototype에 해당한다. Agent runtime의 기본 골격, API/UI,
 artifact, self-check, eval, 보안 기본값, role token, job 제어, trace export, parser guard,
-process parser mode, job metadata persistence, queued/running job restart resume은
+process parser mode, job metadata persistence, queued/running job restart resume,
+running job cooperative cancellation은
 들어갔지만 production platform은 아니다.
 
 ## 15. 운영 기준

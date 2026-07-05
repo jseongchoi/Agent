@@ -285,7 +285,7 @@ http://127.0.0.1:8008
 | `POST /api/jobs` | background job으로 agent 실행 |
 | `GET /api/jobs` | 최근 job 목록 |
 | `GET /api/jobs/{job_id}` | job 상태 조회 |
-| `DELETE /api/jobs/{job_id}` | queued job 취소 |
+| `DELETE /api/jobs/{job_id}` | queued job 취소 또는 running job 취소 요청 |
 | `POST /api/jobs/{job_id}/retry` | failed/cancelled job 재시도 |
 
 API server의 기본 보안 정책은 다음과 같다.
@@ -308,6 +308,8 @@ API server의 기본 보안 정책은 다음과 같다.
 `GET /api/jobs/{job_id}`로 `queued`, `running`, `completed`, `failed`, `cancelled` 상태를 확인한다.
 서버를 다시 띄워도 완료/실패 job metadata는 `SEMICON_AGENT_JOB_DB`에 남아 조회할 수 있다.
 payload가 남은 `queued`/`running` job은 서버 시작 시 같은 `job_id`로 다시 실행 큐에 들어간다.
+job 응답에는 현재 단계용 `progress`와 취소 요청 여부인 `cancel_requested`가 포함된다.
+running job 취소는 Python thread를 강제로 죽이는 방식이 아니라 agent가 다음 안전 경계에서 멈추는 cooperative cancellation이다.
 
 role token 예시는 다음과 같다.
 
@@ -707,7 +709,7 @@ parser timeout, upload content sniffing, chunked upload write는 들어갔다. `
 실제로 최신 Agent platform에 가까워지려면 다음 순서가 현실적이다.
 
 1. External durable worker: 현재 in-process resumable job을 별도 worker/queue 구조로 바꾼다.
-2. Run/job status endpoint 확장: progress와 running-job cooperative cancellation을 추가한다.
+2. Run/job status endpoint 확장: timeout 정책과 더 상세한 progress event를 추가한다.
 3. True streaming: SSE 또는 WebSocket으로 token/tool event를 실시간 전송한다.
 4. Remote LLM policy: remote LLM에 보낼 payload를 tool별 summary와 정책으로 제한한다.
 5. Upload hardening: per-format parser sandbox profile을 넣는다.

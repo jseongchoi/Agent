@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from semicon_agent.config import validate_max_steps
 from semicon_agent.core.agent import AgentRun, SemiconductorAgent
 from semicon_agent.core.artifacts import MAX_UPLOAD_BYTES, ArtifactStore
+from semicon_agent.core.cancellation import CancellationToken
 from semicon_agent.core.errors import AgentAPIError
 from semicon_agent.core.observability import export_events_as_spans
 from semicon_agent.core.policy import ExecutionPolicy, RiskLevel
@@ -19,7 +20,7 @@ from semicon_agent.core.trace import redact
 from semicon_agent.llm.mock import MockLLM
 from semicon_agent.llm.open_model import OpenModelLLM
 from semicon_agent.server.auth import AuthPolicy, Role
-from semicon_agent.server.jobs import InMemoryJobStore
+from semicon_agent.server.jobs import InMemoryJobStore, JobControl
 from semicon_agent.tools.registry import build_default_registry
 
 
@@ -65,7 +66,8 @@ def create_app(
     registry = build_default_registry()
 
     def job_task_from_payload(payload: dict[str, object]):
-        def run_job() -> dict[str, object]:
+        def run_job(control: JobControl) -> dict[str, object]:
+            control.progress("preparing", "Preparing restored job request.")
             request = RunRequest.model_validate(payload)
             llm, policy, data_path = _prepare_run_request(
                 request,
@@ -79,6 +81,7 @@ def create_app(
                 allow_client_llm_config=allow_client_llm_config,
                 allow_client_risk_approval=allow_client_risk_approval,
             )
+            control.progress("executing", "Running agent.")
             return _execute_run_request(
                 request,
                 llm=llm,
@@ -86,6 +89,7 @@ def create_app(
                 data_path=data_path,
                 run_store=run_store,
                 artifact_store=artifact_store,
+                cancellation_token=control.cancellation_token,
             )
 
         return run_job
@@ -180,13 +184,14 @@ def create_app(
         )
         payload = request.model_dump(mode="json", exclude_unset=True)
         job = job_store.submit(
-            lambda: _execute_run_request(
+            lambda control: _execute_run_request(
                 request,
                 llm=llm,
                 policy=policy,
                 data_path=data_path,
                 run_store=run_store,
                 artifact_store=artifact_store,
+                cancellation_token=control.cancellation_token,
             ),
             payload=payload,
         )
@@ -340,6 +345,7 @@ def _execute_run_request(
     data_path: Path | None,
     run_store: SQLiteRunStore,
     artifact_store: ArtifactStore,
+    cancellation_token: CancellationToken | None = None,
 ) -> dict[str, object]:
     agent = SemiconductorAgent(llm=llm, policy=policy, run_store=run_store)
     previous_runs = run_store.list_runs(limit=request.include_previous_runs) if request.include_previous_runs else []
@@ -350,6 +356,7 @@ def _execute_run_request(
         max_steps=request.max_steps,
         stream=request.stream,
         previous_runs=previous_runs,
+        cancellation_token=cancellation_token,
     )
     artifact_name = artifact_store.save_text(f"reports/{run.run_id}.md", run.final_answer)
     payload = _run_payload(run, debug=request.debug)
