@@ -27,6 +27,9 @@ future open-model APIs.
 17. Eval CLI: deterministic agent scenario checks for CI.
 18. Durable job metadata: job status/result records persist in SQLite.
 19. Compact API payloads: detailed plan/tool/event payloads require `debug: true`.
+20. Role-based API tokens: optional `read`, `write`, and `admin` bearer tokens.
+21. Remote LLM payload minimization: tool results are summarized before open-model synthesis.
+22. Process-isolated parser mode: optional subprocess parser with timeout-based process kill.
 
 ## Core Features
 
@@ -43,11 +46,14 @@ future open-model APIs.
 - Shared configuration via `SEMICON_AGENT_*` and `OPEN_MODEL_*` environment variables
 - Serverless self-check command for CI or local validation
 - Optional bearer-token API boundary via `SEMICON_AGENT_API_TOKEN`
+- Optional role-based API tokens via `SEMICON_AGENT_API_TOKENS`
 - Upload content sniffing for text and Excel files
 - Chunked upload writes with cleanup on failed validation
 - Structured API error response with backward-compatible `detail`
 - Parser timeout, row/column/cell/file-size guards for table loading
+- Optional process-isolated parser mode via `SEMICON_AGENT_PARSER_MODE=process`
 - Deterministic eval command for regression testing agent behavior
+- Minimized tool-result payloads for remote/open-model synthesis
 
 ## Install
 
@@ -145,12 +151,22 @@ python -m semicon_agent.server --host 127.0.0.1 --port 8008 --allow-root example
 
 Clients then send `Authorization: Bearer change-me` to `/api/*`.
 
+For role-based tokens:
+
+```powershell
+$env:SEMICON_AGENT_API_TOKENS="read:reader-token,write:writer-token,admin:admin-token"
+python -m semicon_agent.server --host 127.0.0.1 --port 8008 --allow-root examples
+```
+
+`read` can query status/runs/artifacts, `write` can run jobs and upload data, and `admin` is reserved for future privileged operations.
+
 Server API defaults are intentionally local-first:
 
 - Client-provided LLM `base_url`, `api_key`, and `allow_remote_llm` are rejected unless the server starts with `--allow-client-llm-config`.
 - Client-provided risk approvals are rejected unless the server starts with `--allow-client-risk-approval`.
 - Detailed path status is hidden unless the server starts with `--debug-status`.
 - If `--api-token` or `SEMICON_AGENT_API_TOKEN` is set, `/api/*` requires a bearer token.
+- `SEMICON_AGENT_API_TOKENS` can define role-scoped tokens with `role:token` entries.
 - API errors include both `detail` and structured `error.code`, `error.category`, and `error.retryable`.
 - `/api/runs` and `/api/jobs` return compact result payloads by default. Pass `"debug": true` in the run request to include plans, tool results, and events.
 - Job metadata is persisted to SQLite. Use `--job-db` or `SEMICON_AGENT_JOB_DB` to choose the file.
@@ -196,12 +212,16 @@ Input data expectations:
 - Numeric columns that are not obvious IDs/bins are treated as measurement columns.
 - Table loading enforces row, column, cell, parser timeout, and file-size limits to avoid accidental oversized parses.
 - Direct table loading also enforces a file size limit.
+- Set `SEMICON_AGENT_PARSER_MODE=process` to parse tables in a subprocess that can be killed on timeout.
 
 Useful environment variables:
 
 - `SEMICON_AGENT_SESSION_DB`
 - `SEMICON_AGENT_JOB_DB`
 - `SEMICON_AGENT_ARTIFACT_ROOT`
+- `SEMICON_AGENT_API_TOKEN`
+- `SEMICON_AGENT_API_TOKENS`
+- `SEMICON_AGENT_PARSER_MODE`
 - `SEMICON_AGENT_ALLOWED_ROOTS`
 - `SEMICON_AGENT_MAX_STEPS`
 - `SEMICON_AGENT_ALLOW_REMOTE_LLM`

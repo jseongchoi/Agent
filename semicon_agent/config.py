@@ -19,12 +19,36 @@ def _env_roots(name: str) -> tuple[Path, ...]:
     return tuple(Path(part).expanduser() for part in value.split(os.pathsep) if part.strip())
 
 
+def _env_api_tokens(name: str) -> dict[str, str]:
+    value = os.getenv(name, "")
+    tokens: dict[str, str] = {}
+    if not value.strip():
+        return tokens
+    for raw_entry in value.split(","):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        try:
+            role, token = entry.split(":", 1)
+        except ValueError as exc:
+            raise ValueError("API token entries must use role:token format.") from exc
+        normalized = role.strip().lower()
+        if normalized not in {"read", "write", "admin"}:
+            raise ValueError("API token role must be read, write, or admin.")
+        token = token.strip()
+        if not token:
+            raise ValueError("API token cannot be empty.")
+        tokens[token] = normalized
+    return tokens
+
+
 @dataclass(frozen=True)
 class AgentSettings:
     session_db: Path = Path(".semicon_agent/runs.sqlite")
     job_db: Path = Path(".semicon_agent/jobs.sqlite")
     artifact_root: Path = Path(".semicon_agent/artifacts")
     api_token: str | None = None
+    api_tokens: dict[str, str] = field(default_factory=dict)
     open_model_base_url: str = "http://localhost:8000/v1"
     open_model_name: str = "open-model"
     open_model_api_key: str | None = None
@@ -41,6 +65,7 @@ class AgentSettings:
             job_db=Path(os.getenv("SEMICON_AGENT_JOB_DB", ".semicon_agent/jobs.sqlite")),
             artifact_root=Path(os.getenv("SEMICON_AGENT_ARTIFACT_ROOT", ".semicon_agent/artifacts")),
             api_token=os.getenv("SEMICON_AGENT_API_TOKEN"),
+            api_tokens=_env_api_tokens("SEMICON_AGENT_API_TOKENS"),
             open_model_base_url=os.getenv("OPEN_MODEL_BASE_URL", "http://localhost:8000/v1"),
             open_model_name=os.getenv("OPEN_MODEL_NAME", "open-model"),
             open_model_api_key=os.getenv("OPEN_MODEL_API_KEY"),

@@ -64,6 +64,36 @@ def test_api_token_protects_api_routes(tmp_path: Path) -> None:
     assert allowed.status_code == 200
 
 
+def test_api_role_tokens_limit_write_routes(tmp_path: Path) -> None:
+    client = TestClient(
+        create_app(
+            session_db=tmp_path / "runs.sqlite",
+            artifact_root=tmp_path / "artifacts",
+            api_tokens={"reader": "read", "writer": "write"},
+        )
+    )
+
+    read_headers = {"Authorization": "Bearer reader"}
+    write_headers = {"Authorization": "Bearer writer"}
+
+    assert client.get("/api/status", headers=read_headers).status_code == 200
+
+    blocked = client.post(
+        "/api/runs",
+        headers=read_headers,
+        json={"request": "analyze yield", "data_path": str(DATA_PATH)},
+    )
+    assert blocked.status_code == 403
+    assert blocked.json()["error"]["code"] == "AUTH_FORBIDDEN"
+
+    allowed = client.post(
+        "/api/runs",
+        headers=write_headers,
+        json={"request": "analyze yield", "data_path": str(DATA_PATH)},
+    )
+    assert allowed.status_code == 200
+
+
 def test_status_endpoint_can_expose_debug_paths_when_enabled(tmp_path: Path) -> None:
     client = TestClient(
         create_app(

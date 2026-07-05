@@ -8,6 +8,7 @@ from semicon_agent.core.agent import SemiconductorAgent
 from semicon_agent.core.policy import ExecutionPolicy
 from semicon_agent.core.session import SQLiteRunStore
 from semicon_agent.llm.open_model import OpenModelLLM
+from semicon_agent.llm.privacy import summarize_tool_results
 from semicon_agent.models import AgentPlan, ToolCall, ToolResult
 from semicon_agent.tools.base import ToolSpec
 from semicon_agent.tools.registry import ToolRegistry, build_default_registry
@@ -219,3 +220,66 @@ def test_open_model_endpoint_policy() -> None:
         OpenModelLLM(base_url="http://example.com/v1", model="demo", allow_remote=True)
 
     OpenModelLLM(base_url="https://example.com/v1", model="demo", allow_remote=True)
+
+
+def test_remote_llm_tool_result_payload_is_minimized() -> None:
+    raw = ToolResult(
+        name="anomaly_scan",
+        arguments={"path": "C:/secret/raw.csv"},
+        output={
+            "kind": "anomaly_scan",
+            "z_threshold": 2.0,
+            "total_anomaly_count": 1,
+            "columns": [
+                {
+                    "column": "param",
+                    "anomaly_count": 1,
+                    "examples": [{"row": 7, "value": 999999.0, "z_score": 12.3}],
+                }
+            ],
+        },
+    )
+
+    summary = summarize_tool_results([raw])
+
+    assert summary[0]["arguments"]["path"] == "raw.csv"
+    assert summary[0]["summary"]["columns"] == [{"column": "param", "anomaly_count": 1}]
+    assert "999999" not in str(summary)
+
+
+def test_open_model_synthesis_uses_minimized_payload() -> None:
+    class CapturingLLM(OpenModelLLM):
+        def __init__(self) -> None:
+            super().__init__(base_url="http://localhost:8000/v1", model="demo")
+            self.messages = []
+
+        def _chat(self, messages, temperature):
+            self.messages = messages
+            return "ok"
+
+    llm = CapturingLLM()
+    raw = ToolResult(
+        name="make_semiconductor_report",
+        arguments={"path": str(DATA_PATH)},
+        output={
+            "kind": "markdown_report",
+            "markdown": "RAW_MARKDOWN_SHOULD_NOT_BE_SENT",
+            "sections": {
+                "yield": {
+                    "kind": "yield_summary",
+                    "total_count": 10,
+                    "pass_count": 9,
+                    "fail_count": 1,
+                    "yield_pct": 90.0,
+                    "pass_source": "is_pass",
+                }
+            },
+        },
+    )
+
+    assert llm.synthesize("summarize", [raw], {"data_path": str(DATA_PATH)}) == "ok"
+    user_content = llm.messages[1]["content"]
+
+    assert "RAW_MARKDOWN_SHOULD_NOT_BE_SENT" not in user_content
+    assert "sample_wafer.csv" in user_content
+    assert "yield_pct" in user_content

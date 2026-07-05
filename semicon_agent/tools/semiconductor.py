@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import concurrent.futures
+import os
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 from typing import Any, Callable
 
 import numpy as np
@@ -336,12 +340,17 @@ def load_table(
     max_bytes: int = MAX_TABLE_BYTES,
     max_cells: int = MAX_TABLE_CELLS,
     parser_timeout_s: float = PARSER_TIMEOUT_SECONDS,
+    parser_mode: str = "thread",
 ) -> pd.DataFrame:
     table_path = Path(path).expanduser().resolve()
     if not table_path.exists():
         raise FileNotFoundError(f"Data file not found: {table_path}")
     if table_path.stat().st_size > max_bytes:
         raise ValueError(f"Table exceeds file size limit of {max_bytes} bytes: {table_path}")
+    effective_mode = os.getenv("SEMICON_AGENT_PARSER_MODE", parser_mode).strip().lower()
+    if effective_mode == "process":
+        df = _read_in_subprocess(table_path, max_rows + 1, parser_timeout_s)
+        return _enforce_table_limits(df, table_path, max_rows, max_columns, max_cells)
     if table_path.suffix.lower() == ".csv":
         df = _read_with_timeout(lambda: pd.read_csv(table_path, nrows=max_rows + 1), table_path, parser_timeout_s)
         return _enforce_table_limits(df, table_path, max_rows, max_columns, max_cells)
@@ -364,6 +373,32 @@ def _read_with_timeout(read: Callable[[], pd.DataFrame], path: Path, timeout_s: 
         raise ValueError(f"Table parsing exceeded timeout of {timeout_s} seconds: {path}") from exc
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _read_in_subprocess(path: Path, max_rows: int, timeout_s: float) -> pd.DataFrame:
+    if path.suffix.lower() not in {".csv", ".tsv", ".txt", ".xlsx", ".xls"}:
+        raise ValueError(f"Unsupported data file type: {path.suffix}")
+    with tempfile.TemporaryDirectory(prefix="semicon-agent-parser-") as directory:
+        output = Path(directory) / "table.pkl"
+        command = [
+            sys.executable,
+            "-m",
+            "semicon_agent.tools.table_parser",
+            "--path",
+            str(path),
+            "--max-rows",
+            str(max_rows),
+            "--output",
+            str(output),
+        ]
+        try:
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout_s)
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError(f"Table parsing exceeded timeout of {timeout_s} seconds: {path}") from exc
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise ValueError(f"Table parser process failed: {detail}")
+        return pd.read_pickle(output)
 
 
 def _enforce_table_limits(

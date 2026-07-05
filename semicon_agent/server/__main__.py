@@ -39,6 +39,7 @@ def main() -> None:
             allow_client_risk_approval=args.allow_client_risk_approval,
             debug_status=args.debug_status,
             api_token=args.api_token,
+            api_tokens=settings.api_tokens,
             job_workers=args.job_workers,
         ),
         host=args.host,

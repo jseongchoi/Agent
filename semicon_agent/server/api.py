@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import secrets
 from typing import Literal
 
 from fastapi import FastAPI, File, Request, UploadFile
@@ -19,6 +18,7 @@ from semicon_agent.core.session import SQLiteRunStore
 from semicon_agent.core.trace import redact
 from semicon_agent.llm.mock import MockLLM
 from semicon_agent.llm.open_model import OpenModelLLM
+from semicon_agent.server.auth import AuthPolicy, Role
 from semicon_agent.server.jobs import InMemoryJobStore
 from semicon_agent.tools.registry import build_default_registry
 
@@ -53,6 +53,7 @@ def create_app(
     allow_client_risk_approval: bool = False,
     debug_status: bool = False,
     api_token: str | None = None,
+    api_tokens: dict[str, str] | None = None,
     job_workers: int = 2,
 ) -> FastAPI:
     app = FastAPI(title="Semicon Agent", version="0.1.0")
@@ -60,6 +61,7 @@ def create_app(
     artifact_store = ArtifactStore(artifact_root)
     resolved_job_db = job_db if job_db is not None else Path(session_db).expanduser().with_name("jobs.sqlite")
     job_store = InMemoryJobStore(max_workers=job_workers, metadata_path=resolved_job_db)
+    auth_policy = AuthPolicy.from_config(api_token=api_token, api_tokens=_coerce_api_tokens(api_tokens or {}))
     app.add_event_handler("shutdown", job_store.shutdown)
     server_allowed_roots = _server_allowed_roots(allowed_roots, artifact_store.root)
     registry = build_default_registry()
@@ -77,7 +79,7 @@ def create_app(
 
     @app.get("/api/status")
     def status(http_request: Request) -> dict[str, object]:
-        _require_api_token(http_request, api_token)
+        _require_api_role(http_request, auth_policy, "read")
         payload = {
             "status": "ok",
             "version": app.version,
@@ -105,7 +107,7 @@ def create_app(
 
     @app.post("/api/runs")
     def create_run(request: RunRequest, http_request: Request) -> dict[str, object]:
-        _require_api_token(http_request, api_token)
+        _require_api_role(http_request, auth_policy, "write")
         llm, policy, data_path = _prepare_run_request(
             request,
             artifact_store=artifact_store,
@@ -132,7 +134,7 @@ def create_app(
 
     @app.post("/api/jobs", status_code=http_status.HTTP_202_ACCEPTED)
     def create_job(request: RunRequest, http_request: Request) -> dict[str, object]:
-        _require_api_token(http_request, api_token)
+        _require_api_role(http_request, auth_policy, "write")
         llm, policy, data_path = _prepare_run_request(
             request,
             artifact_store=artifact_store,
@@ -159,12 +161,12 @@ def create_app(
 
     @app.get("/api/jobs")
     def list_jobs(http_request: Request, limit: int = 20) -> list[dict[str, object]]:
-        _require_api_token(http_request, api_token)
+        _require_api_role(http_request, auth_policy, "read")
         return [job.to_dict() for job in job_store.list(limit=limit)]
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str, http_request: Request) -> dict[str, object]:
-        _require_api_token(http_request, api_token)
+        _require_api_role(http_request, auth_policy, "read")
         job = job_store.get(job_id)
         if job is None:
             raise AgentAPIError(404, "JOB_NOT_FOUND", "Job not found.", "not_found")
@@ -172,7 +174,7 @@ def create_app(
 
     @app.delete("/api/jobs/{job_id}", status_code=http_status.HTTP_202_ACCEPTED)
     def cancel_job(job_id: str, http_request: Request) -> dict[str, object]:
-        _require_api_token(http_request, api_token)
+        _require_api_role(http_request, auth_policy, "write")
         cancelled = job_store.cancel(job_id)
         if cancelled is None:
             raise AgentAPIError(404, "JOB_NOT_FOUND", "Job not found.", "not_found")
@@ -183,7 +185,7 @@ def create_app(
 
     @app.post("/api/jobs/{job_id}/retry", status_code=http_status.HTTP_202_ACCEPTED)
     def retry_job(job_id: str, http_request: Request) -> dict[str, object]:
-        _require_api_token(http_request, api_token)
+        _require_api_role(http_request, auth_policy, "write")
         try:
             job = job_store.retry(job_id)
         except ValueError as exc:
@@ -194,7 +196,7 @@ def create_app(
 
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str, http_request: Request) -> dict[str, object]:
-        _require_api_token(http_request, api_token)
+        _require_api_role(http_request, auth_policy, "read")
         run = run_store.get_run(run_id)
         if run is None:
             raise AgentAPIError(404, "RUN_NOT_FOUND", "Run not found.", "not_found")
@@ -202,12 +204,12 @@ def create_app(
 
     @app.get("/api/runs")
     def list_runs(http_request: Request, limit: int = 20) -> list[dict[str, object]]:
-        _require_api_token(http_request, api_token)
+        _require_api_role(http_request, auth_policy, "read")
         return run_store.list_runs(limit=limit)
 
     @app.get("/api/runs/{run_id}/trace")
     def get_trace(run_id: str, http_request: Request) -> list[dict[str, object]]:
-        _require_api_token(http_request, api_token)
+        _require_api_role(http_request, auth_policy, "read")
         events = run_store.get_events(run_id)
         if not events:
             raise AgentAPIError(404, "RUN_TRACE_NOT_FOUND", "Run trace not found.", "not_found")
@@ -215,7 +217,7 @@ def create_app(
 
     @app.get("/api/runs/{run_id}/otel")
     def get_trace_spans(run_id: str, http_request: Request) -> list[dict[str, object]]:
-        _require_api_token(http_request, api_token)
+        _require_api_role(http_request, auth_policy, "read")
         events = run_store.get_events(run_id)
         if not events:
             raise AgentAPIError(404, "RUN_TRACE_NOT_FOUND", "Run trace not found.", "not_found")
@@ -223,12 +225,12 @@ def create_app(
 
     @app.get("/api/artifacts")
     def list_artifacts(http_request: Request) -> list[dict[str, object]]:
-        _require_api_token(http_request, api_token)
+        _require_api_role(http_request, auth_policy, "read")
         return artifact_store.list_artifacts()
 
     @app.post("/api/artifacts")
     async def upload_artifact(http_request: Request, file: UploadFile = File(...)) -> dict[str, object]:
-        _require_api_token(http_request, api_token)
+        _require_api_role(http_request, auth_policy, "write")
         path: Path | None = None
         try:
             name, path, suffix = artifact_store.prepare_upload(file.filename or "upload")
@@ -252,7 +254,7 @@ def create_app(
 
     @app.get("/api/artifacts/{name:path}")
     def get_artifact(name: str, http_request: Request) -> FileResponse:
-        _require_api_token(http_request, api_token)
+        _require_api_role(http_request, auth_policy, "read")
         try:
             path = artifact_store.path_for(name)
             return FileResponse(path)
@@ -395,13 +397,17 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
-def _require_api_token(request: Request, api_token: str | None) -> None:
-    if not api_token:
-        return
-    authorization = request.headers.get("authorization", "")
-    expected = f"Bearer {api_token}"
-    if not secrets.compare_digest(authorization, expected):
-        raise AgentAPIError(401, "AUTH_REQUIRED", "A valid bearer token is required.", "auth")
+def _require_api_role(request: Request, auth_policy: AuthPolicy, role: Role) -> None:
+    auth_policy.require(request, role)
+
+
+def _coerce_api_tokens(tokens: dict[str, str]) -> dict[str, Role]:
+    valid: dict[str, Role] = {}
+    for token, role in tokens.items():
+        if role not in {"read", "write", "admin"}:
+            raise ValueError("API token role must be read, write, or admin.")
+        valid[token] = role  # type: ignore[assignment]
+    return valid
 
 
 def _run_payload(run: AgentRun, debug: bool = False) -> dict[str, object]:

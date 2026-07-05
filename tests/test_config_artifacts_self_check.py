@@ -18,6 +18,7 @@ def test_settings_reads_environment_roots(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setenv("SEMICON_AGENT_ARTIFACT_ROOT", str(tmp_path / "artifacts"))
     monkeypatch.setenv("SEMICON_AGENT_JOB_DB", str(tmp_path / "jobs.sqlite"))
     monkeypatch.setenv("SEMICON_AGENT_API_TOKEN", "test-token")
+    monkeypatch.setenv("SEMICON_AGENT_API_TOKENS", "read:reader-token,write:writer-token")
 
     settings = AgentSettings.from_env(cwd=tmp_path / "cwd")
     roots = settings.resolved_allowed_roots(include_artifact_root=True)
@@ -27,6 +28,7 @@ def test_settings_reads_environment_roots(tmp_path: Path, monkeypatch: pytest.Mo
     assert (tmp_path / "artifacts").resolve() in roots
     assert settings.job_db == tmp_path / "jobs.sqlite"
     assert settings.api_token == "test-token"
+    assert settings.api_tokens == {"reader-token": "read", "writer-token": "write"}
 
 
 def test_artifact_store_rejects_escape_and_unsupported_upload(tmp_path: Path) -> None:

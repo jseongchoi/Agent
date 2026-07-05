@@ -1,6 +1,6 @@
 # Semicon Agent Improvement Audit
 
-This document records the empirical audit performed after core v7. It separates
+This document records the empirical audit performed after core v9. It separates
 items that were fixed immediately from items that remain as engineering backlog.
 
 ## Verification Matrix
@@ -11,7 +11,7 @@ The following checks were run against the repository:
 | --- | --- |
 | `python -m pip install -e ".[dev]"` | Passed |
 | `python -m pip check` | Passed |
-| `python -m pytest -p no:cacheprovider` | Passed, 58 tests |
+| `python -m pytest -p no:cacheprovider` | Passed, 63 tests |
 | `python -m semicon_agent.self_check --data examples/sample_wafer.csv` | Passed |
 | `python -m semicon_agent.eval` | Passed |
 | `semicon-agent-check --data examples/sample_wafer.csv` | Passed after editable reinstall |
@@ -45,6 +45,9 @@ The following checks were run against the repository:
 | API payload size | Run/job results returned full plan/tool/event payloads by default. | Added compact default payloads and `debug: true` for details. |
 | Parser hardening | Parser timeout and cell budget were missing. | Added parser timeout and cell budget to `load_table`. |
 | Upload memory path | API upload read the whole file before saving. | Switched API upload to chunked writes with cleanup on validation failure. |
+| RBAC token boundary | API token was all-or-nothing. | Added optional `read`, `write`, and `admin` bearer token roles. |
+| Remote LLM payload minimization | Open-model synthesis received full tool outputs. | Added tool-result summaries before outbound LLM synthesis. |
+| Parser isolation | Parser timeout could raise to caller but not kill the parser work. | Added optional subprocess parser mode with timeout-based process kill. |
 
 ## Current Strengths
 
@@ -59,12 +62,15 @@ The following checks were run against the repository:
 - FastAPI API and simple local Web UI.
 - In-memory background job API for long local runs.
 - Optional bearer-token API boundary for local/shared test deployments.
+- Optional role-based API tokens for read/write/admin separation.
 - Structured API error payloads.
 - Queued-job cancellation and failed-job retry.
 - SQLite-backed job status/result metadata.
 - Compact API result payloads with opt-in debug detail.
 - Span-like trace export for observability integrations.
 - Deterministic eval CLI for CI.
+- Minimized remote LLM synthesis payloads.
+- Optional process-isolated parser mode.
 - Serverless self-check suitable for smoke testing.
 - Beginner and architecture documentation now cover setup, commands, code tour, and limitations.
 
@@ -76,12 +82,12 @@ production-like platform.
 | Priority | Area | Work Needed | Reason |
 | --- | --- | --- | --- |
 | P0 | Durable API execution model | Replace in-process execution with a persistent queue/worker that can resume queued jobs after restart. | Job metadata persists, but task execution is still in-process. |
-| P0 | Auth boundary | Add role-based authorization, audit identity, and deployment-grade auth middleware. | Token auth exists, but it is not RBAC or enterprise identity. |
-| P0 | Upload hardening | Add parser process isolation and deeper Excel protections. | Upload chunking, content sniffing, parser timeout, and cell budget exist, but parsing still happens in-process. |
-| P0 | Remote LLM redaction | Add per-tool result summaries and stricter outbound payload filtering. | Remote LLM calls should not receive full raw tool outputs by default. |
+| P0 | Auth boundary | Add audit identity, expiry/rotation, and deployment-grade auth middleware. | Role tokens exist, but they are not enterprise identity. |
+| P0 | Upload hardening | Add deeper Excel protections and per-format parser sandbox profiles. | Upload chunking, content sniffing, parser timeout, cell budget, and optional process parsing exist. |
+| P0 | Remote LLM policy | Add tool-level outbound allowlists, tenant policies, and stricter field controls. | Summaries exist, but policy is not configurable per deployment. |
 | P1 | Job operations | Add running-job cooperative cancellation, progress events, and timeout policy. | Queued cancellation and retry exist; running jobs still finish normally. |
 | P1 | True streaming | Implement provider streaming and SSE/WebSocket event delivery. | Current `stream` path is streaming-ready but returns one final JSON response. |
-| P1 | Strong parser limits | Add process-level parser kill and per-format parser profiles. | Current timeout raises to caller but cannot forcibly stop a stuck parser thread. |
+| P1 | Strong parser limits | Make process parser mode the deployment default where appropriate and add per-format parser profiles. | Process mode exists, but default remains thread mode for local speed. |
 | P1 | Tool result contracts | Define typed result models for major tools. | Reduces downstream assumptions and makes LLM summaries safer. |
 
 ## P2/P3 Backlog
@@ -102,10 +108,10 @@ The next practical sprint should focus on production shape, not more demo
 analytics:
 
 1. Replace in-process jobs with a durable queue/worker.
-2. Add process-isolated parsing and stronger Excel protection.
-3. Add role-based auth and audit identity.
+2. Add stronger Excel protection and per-format parser sandbox profiles.
+3. Add enterprise auth identity, token rotation, and audit identity.
 4. Add true SSE/WebSocket streaming and provider streaming.
-5. Add remote LLM payload minimization.
+5. Add remote LLM outbound policy controls.
 
 Those five changes would move the framework closer to a robust agent platform
 without over-investing in placeholder semiconductor analysis logic.

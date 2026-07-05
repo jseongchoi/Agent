@@ -58,6 +58,9 @@
 | 완료 | Compact API payload | `semicon_agent/server/api.py` | compact/debug response tests |
 | 완료 | Parser timeout/cell budget | `semicon_agent/tools/semiconductor.py` | parser/cell limit tests |
 | 완료 | Chunked upload write/cleanup | `semicon_agent/server/api.py`, `core/artifacts.py` | invalid upload cleanup test |
+| 완료 | Role-based API tokens | `semicon_agent/server/auth.py`, `server/api.py` | read/write route tests |
+| 완료 | Remote LLM payload minimization | `semicon_agent/llm/privacy.py`, `llm/open_model.py` | privacy/open-model tests |
+| 완료 | Process-isolated parser mode | `semicon_agent/tools/table_parser.py`, `tools/semiconductor.py` | process parser success/timeout tests |
 
 ## 아직 남은 고우선순위 TODO
 
@@ -66,9 +69,9 @@
 | 우선순위 | TODO | 이유 |
 | --- | --- | --- |
 | P0 | Durable queue/worker | job metadata는 SQLite에 남지만, 프로세스 재시작 후 queued/running task를 재개하지는 못한다. |
-| P0 | Role-based auth | bearer token은 최소 경계일 뿐, 사용자/권한/감사 ID가 없다. |
-| P0 | Full upload streaming | API는 chunk write를 하지만, Excel 검증과 parser는 여전히 로컬 파일 전체를 검사한다. |
-| P0 | Remote LLM payload minimization | remote LLM에 tool result 전체를 보내지 않도록 요약/마스킹 계층이 필요하다. |
+| P0 | Deployment auth | role token은 들어갔지만 사용자 ID, rotation, expiry, enterprise identity 연동은 없다. |
+| P0 | Full upload streaming | API는 chunk write와 process parser mode를 지원하지만, Excel 검증은 여전히 로컬 파일 archive 전체를 검사한다. |
+| P0 | Remote LLM policy controls | payload 요약은 들어갔지만 tool별 outbound allowlist와 tenant별 정책은 없다. |
 | P1 | True SSE/WebSocket streaming | 현재 streaming-ready path는 있지만 HTTP 실시간 이벤트가 아니다. |
 | P1 | Durable human approval | approval 후 resume 가능한 checkpoint runtime이 필요하다. |
 | P1 | Provider adapters | Ollama, vLLM, LM Studio, OpenRouter 등 provider별 adapter가 필요하다. |
@@ -81,5 +84,5 @@
 기능 데모 수준을 넘어 agent runtime, 정책, trace, artifact, API, job metadata persistence,
 parser guard, eval, CI까지 들어갔다.
 
-다만 “최고 수준 production agent platform”이라고 부르려면 durable worker execution, RBAC,
-streaming transport, provider ecosystem, process-isolated parsing, remote LLM payload control이 더 필요하다.
+다만 “최고 수준 production agent platform”이라고 부르려면 durable worker execution, enterprise auth,
+streaming transport, provider ecosystem, per-format parser sandbox policy, remote LLM policy controls가 더 필요하다.

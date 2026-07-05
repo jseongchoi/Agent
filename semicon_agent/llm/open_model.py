@@ -12,7 +12,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from semicon_agent.models import AgentPlan, LLMStreamChunk, ToolResult
-from semicon_agent.llm.privacy import redact_for_llm
+from semicon_agent.llm.privacy import redact_for_llm, summarize_tool_results
 from semicon_agent.tools.base import ToolSpec
 
 
@@ -86,7 +86,7 @@ class OpenModelLLM:
         tool_results: list[ToolResult],
         context: dict[str, object],
     ) -> str:
-        result_payload = redact_for_llm([result.model_dump() for result in tool_results])
+        result_payload = summarize_tool_results(tool_results)
         messages = [
             {
                 "role": "system",

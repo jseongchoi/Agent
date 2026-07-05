@@ -105,6 +105,28 @@ def test_load_table_enforces_parser_timeout(tmp_path: Path, monkeypatch) -> None
         raise AssertionError("Expected parser timeout error.")
 
 
+def test_load_table_process_parser_mode_reads_table(tmp_path: Path) -> None:
+    data = tmp_path / "process.csv"
+    data.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    loaded = load_table(str(data), parser_mode="process")
+
+    assert list(loaded.columns) == ["a", "b"]
+    assert len(loaded) == 1
+
+
+def test_load_table_process_parser_mode_can_kill_timeout(tmp_path: Path) -> None:
+    data = tmp_path / "process_timeout.csv"
+    data.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    try:
+        load_table(str(data), parser_timeout_s=0.001, parser_mode="process")
+    except ValueError as exc:
+        assert "parsing exceeded timeout" in str(exc)
+    else:
+        raise AssertionError("Expected process parser timeout error.")
+
+
 def test_yield_summary_overall_and_by_wafer() -> None:
     summary = yield_summary(str(DATA_PATH))
 

@@ -628,6 +628,8 @@ core v6에는 optional API token auth, structured error taxonomy, upload content
 direct file size guard, job cancel/retry, span-like trace export, deterministic eval, CI가 들어갔다.
 core v7에는 SQLite job metadata persistence, compact API payload, parser timeout/cell budget,
 chunked upload write/cleanup이 들어갔다.
+core v8에는 role-based API tokens와 remote LLM payload minimization이 들어갔다.
+core v9에는 optional process-isolated parser mode가 들어갔다.
 
 ### 3-1-16. Semicon Agent에 적용할 설계 방향
 
@@ -679,6 +681,8 @@ semicon_agent/
 10. async job/run status/table limit 추가 - core v5 보강 완료
 11. auth/error/upload/eval/CI 보강 - core v6 보강 완료
 12. durable job metadata/compact API/parser timeout 보강 - core v7 보강 완료
+13. RBAC token/remote LLM payload minimization 보강 - core v8 보강 완료
+14. process-isolated parser mode 보강 - core v9 보강 완료
 
 반도체 분석 함수 자체는 나중 문제다. 중요한 것은 agent platform이 안전하고
 관찰 가능하며 교체 가능해야 한다는 점이다.
@@ -852,6 +856,7 @@ API server의 기본 정책은 local-first다.
 - `/api/status`는 기본적으로 절대 경로를 숨긴다.
 - 상세 경로 상태는 `--debug-status`를 명시한 경우에만 노출한다.
 - `SEMICON_AGENT_API_TOKEN` 또는 `--api-token`이 설정되면 `/api/*`는 bearer token을 요구한다.
+- `SEMICON_AGENT_API_TOKENS`를 쓰면 `read`, `write`, `admin` role token을 나눌 수 있다.
 - API 오류는 `detail` 문자열과 함께 `error.code`, `error.category`, `error.retryable`을 반환한다.
 - `/api/runs`와 `/api/jobs` 결과는 기본 compact payload를 반환한다.
 - 상세 plan/tool/event payload가 필요하면 request body에 `debug: true`를 넣는다.
@@ -882,6 +887,15 @@ python -m semicon_agent.server --host 127.0.0.1 --port 8008
 Authorization: Bearer change-me
 ```
 
+role 기반 token을 쓰려면 다음처럼 설정한다.
+
+```powershell
+$env:SEMICON_AGENT_API_TOKENS="read:reader-token,write:writer-token,admin:admin-token"
+python -m semicon_agent.server --host 127.0.0.1 --port 8008
+```
+
+`read` token은 조회 endpoint만 사용할 수 있고, `write` token은 run/job/upload 같은 쓰기 endpoint도 사용할 수 있다.
+
 공통 환경 변수는 다음과 같다.
 
 | 변수 | 역할 |
@@ -890,9 +904,11 @@ Authorization: Bearer change-me
 | `SEMICON_AGENT_JOB_DB` | SQLite job metadata DB path |
 | `SEMICON_AGENT_ARTIFACT_ROOT` | artifact 저장 root |
 | `SEMICON_AGENT_API_TOKEN` | `/api/*` bearer token |
+| `SEMICON_AGENT_API_TOKENS` | `role:token` 형식의 role-based bearer token 목록 |
 | `SEMICON_AGENT_ALLOWED_ROOTS` | 추가 data root 목록. OS path separator로 구분 |
 | `SEMICON_AGENT_MAX_STEPS` | 기본 max plan/act step |
 | `SEMICON_AGENT_ALLOW_REMOTE_LLM` | 서버 측 remote LLM 허용 여부 |
+| `SEMICON_AGENT_PARSER_MODE` | `thread` 또는 `process` table parser mode |
 | `OPEN_MODEL_BASE_URL` | open-model API base URL |
 | `OPEN_MODEL_NAME` | open-model model name |
 | `OPEN_MODEL_API_KEY` | open-model API key |
@@ -953,11 +969,13 @@ python -m semicon_agent.server --default-llm open-model
 | LLM protocol | `semicon_agent/llm/base.py` |
 | Mock LLM | `semicon_agent/llm/mock.py` |
 | Open-model adapter | `semicon_agent/llm/open_model.py` |
+| LLM privacy | `semicon_agent/llm/privacy.py` |
 | Tool base | `semicon_agent/tools/base.py` |
 | Tool registry | `semicon_agent/tools/registry.py` |
 | Tool runtime | `semicon_agent/tools/runtime.py` |
 | Tool validation | `semicon_agent/tools/validation.py` |
 | Semiconductor demo tools | `semicon_agent/tools/semiconductor.py` |
+| Process parser | `semicon_agent/tools/table_parser.py` |
 | CLI | `semicon_agent/cli.py` |
 | FastAPI server | `semicon_agent/server/api.py` |
 | Background jobs | `semicon_agent/server/jobs.py` |
@@ -1107,8 +1125,10 @@ python -m pytest -p no:cacheprovider
 - LLM planning/synthesis 실패가 SQLite에 `failed` 상태로 저장되는지
 - artifact path escape, unsupported upload, malformed upload content가 거부되는지
 - direct table row/column/cell/file-size/parser-timeout limit이 적용되는지
+- optional process parser mode가 정상 parsing과 timeout kill을 처리하는지
 - API status, upload, run, trace, otel export, artifact download가 동작하는지
 - API token auth와 structured error payload가 동작하는지
+- read/write role token이 API route를 제한하는지
 - API compact/debug payload가 동작하는지
 - API job 생성, 상태 조회, 실패 상태, queued cancellation, failed retry, metadata persistence가 동작하는지
 - client-side LLM config와 risk approval이 기본 차단되는지
@@ -1128,6 +1148,7 @@ python -m pytest -p no:cacheprovider
 - table row/column limit - core v5 보강 완료
 - direct file size limit - core v6 보강 완료
 - parser timeout/cell budget - core v7 보강 완료
+- optional process-isolated parser mode - core v9 보강 완료
 - structured error taxonomy - core v6 보강 완료
 - run history 저장 - core v1 완료
 - deterministic eval suite - core v6 보강 완료
@@ -1140,6 +1161,7 @@ python -m pytest -p no:cacheprovider
 - LM Studio adapter
 - OpenRouter adapter
 - response streaming interface - core v2 완료, provider별 true streaming은 남음
+- remote LLM payload minimization - core v8 보강 완료
 - retry, timeout, rate limit
 
 ### Phase 3. Memory and artifacts
@@ -1176,6 +1198,7 @@ python -m pytest -p no:cacheprovider
 - run status endpoint - core v5 보강 완료
 - span-like trace export - core v6 보강 완료
 - optional bearer token auth boundary - core v6 보강 완료
+- role-based API tokens - core v8 보강 완료
 - compact API payload with debug detail - core v7 보강 완료
 - durable worker / persistent queue
 - role-based auth boundary
@@ -1192,8 +1215,9 @@ python -m pytest -p no:cacheprovider
 - SPC chart data
 - recipe/process comparison
 
-현재 repository는 core v7 prototype에 해당한다. Agent runtime의 기본 골격, API/UI,
-artifact, self-check, eval, 보안 기본값, job 제어, trace export, parser guard, job metadata persistence는
+현재 repository는 core v9 prototype에 해당한다. Agent runtime의 기본 골격, API/UI,
+artifact, self-check, eval, 보안 기본값, role token, job 제어, trace export, parser guard,
+process parser mode, job metadata persistence는
 들어갔지만 production platform은 아니다.
 
 ## 15. 운영 기준
