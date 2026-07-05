@@ -1,6 +1,6 @@
 # Semicon Agent Improvement Audit
 
-This document records the empirical audit performed after core v9. It separates
+This document records the empirical audit performed after core v10. It separates
 items that were fixed immediately from items that remain as engineering backlog.
 
 ## Verification Matrix
@@ -11,7 +11,7 @@ The following checks were run against the repository:
 | --- | --- |
 | `python -m pip install -e ".[dev]"` | Passed |
 | `python -m pip check` | Passed |
-| `python -m pytest -p no:cacheprovider` | Passed, 63 tests |
+| `python -m pytest -p no:cacheprovider` | Passed, 67 tests |
 | `python -m semicon_agent.self_check --data examples/sample_wafer.csv` | Passed |
 | `python -m semicon_agent.eval` | Passed |
 | `semicon-agent-check --data examples/sample_wafer.csv` | Passed after editable reinstall |
@@ -48,6 +48,7 @@ The following checks were run against the repository:
 | RBAC token boundary | API token was all-or-nothing. | Added optional `read`, `write`, and `admin` bearer token roles. |
 | Remote LLM payload minimization | Open-model synthesis received full tool outputs. | Added tool-result summaries before outbound LLM synthesis. |
 | Parser isolation | Parser timeout could raise to caller but not kill the parser work. | Added optional subprocess parser mode with timeout-based process kill. |
+| Job restart recovery | Queued/running jobs with persisted metadata were marked failed after API restart. | Persisted compact request payloads and re-enqueue interrupted jobs on app startup. |
 
 ## Current Strengths
 
@@ -66,6 +67,7 @@ The following checks were run against the repository:
 - Structured API error payloads.
 - Queued-job cancellation and failed-job retry.
 - SQLite-backed job status/result metadata.
+- Queued/running job restart recovery from persisted request payloads.
 - Compact API result payloads with opt-in debug detail.
 - Span-like trace export for observability integrations.
 - Deterministic eval CLI for CI.
@@ -81,7 +83,7 @@ production-like platform.
 
 | Priority | Area | Work Needed | Reason |
 | --- | --- | --- | --- |
-| P0 | Durable API execution model | Replace in-process execution with a persistent queue/worker that can resume queued jobs after restart. | Job metadata persists, but task execution is still in-process. |
+| P0 | Durable API execution model | Promote the in-process resumable job store to an external durable queue/worker. | Queued/running payload resume exists, but execution is still in-process and not distributed. |
 | P0 | Auth boundary | Add audit identity, expiry/rotation, and deployment-grade auth middleware. | Role tokens exist, but they are not enterprise identity. |
 | P0 | Upload hardening | Add deeper Excel protections and per-format parser sandbox profiles. | Upload chunking, content sniffing, parser timeout, cell budget, and optional process parsing exist. |
 | P0 | Remote LLM policy | Add tool-level outbound allowlists, tenant policies, and stricter field controls. | Summaries exist, but policy is not configurable per deployment. |
@@ -107,7 +109,7 @@ production-like platform.
 The next practical sprint should focus on production shape, not more demo
 analytics:
 
-1. Replace in-process jobs with a durable queue/worker.
+1. Promote in-process resumable jobs to a durable external queue/worker.
 2. Add stronger Excel protection and per-format parser sandbox profiles.
 3. Add enterprise auth identity, token rotation, and audit identity.
 4. Add true SSE/WebSocket streaming and provider streaming.

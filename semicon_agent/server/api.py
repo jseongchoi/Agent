@@ -60,11 +60,42 @@ def create_app(
     run_store = SQLiteRunStore(session_db)
     artifact_store = ArtifactStore(artifact_root)
     resolved_job_db = job_db if job_db is not None else Path(session_db).expanduser().with_name("jobs.sqlite")
-    job_store = InMemoryJobStore(max_workers=job_workers, metadata_path=resolved_job_db)
     auth_policy = AuthPolicy.from_config(api_token=api_token, api_tokens=_coerce_api_tokens(api_tokens or {}))
-    app.add_event_handler("shutdown", job_store.shutdown)
     server_allowed_roots = _server_allowed_roots(allowed_roots, artifact_store.root)
     registry = build_default_registry()
+
+    def job_task_from_payload(payload: dict[str, object]):
+        def run_job() -> dict[str, object]:
+            request = RunRequest.model_validate(payload)
+            llm, policy, data_path = _prepare_run_request(
+                request,
+                artifact_store=artifact_store,
+                server_allowed_roots=server_allowed_roots,
+                default_llm=default_llm,
+                open_model_base_url=open_model_base_url,
+                open_model_name=open_model_name,
+                open_model_api_key=open_model_api_key,
+                allow_remote_llm=allow_remote_llm,
+                allow_client_llm_config=allow_client_llm_config,
+                allow_client_risk_approval=allow_client_risk_approval,
+            )
+            return _execute_run_request(
+                request,
+                llm=llm,
+                policy=policy,
+                data_path=data_path,
+                run_store=run_store,
+                artifact_store=artifact_store,
+            )
+
+        return run_job
+
+    job_store = InMemoryJobStore(
+        max_workers=job_workers,
+        metadata_path=resolved_job_db,
+        task_factory=job_task_from_payload,
+    )
+    app.add_event_handler("shutdown", job_store.shutdown)
 
     @app.exception_handler(AgentAPIError)
     def agent_api_error_handler(_request: Request, exc: AgentAPIError) -> JSONResponse:
@@ -147,6 +178,7 @@ def create_app(
             allow_client_llm_config=allow_client_llm_config,
             allow_client_risk_approval=allow_client_risk_approval,
         )
+        payload = request.model_dump(mode="json", exclude_unset=True)
         job = job_store.submit(
             lambda: _execute_run_request(
                 request,
@@ -155,7 +187,8 @@ def create_app(
                 data_path=data_path,
                 run_store=run_store,
                 artifact_store=artifact_store,
-            )
+            ),
+            payload=payload,
         )
         return job.to_dict()
 

@@ -12,6 +12,8 @@ from typing import Callable, Literal
 
 
 JobStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
+JobTask = Callable[[], dict[str, object]]
+JobTaskFactory = Callable[[dict[str, object]], JobTask]
 
 
 @dataclass
@@ -22,8 +24,9 @@ class JobRecord:
     updated_at: float
     result: dict[str, object] | None = None
     error: str | None = None
+    payload: dict[str, object] | None = None
     future: Future | None = field(default=None, repr=False)
-    task: Callable[[], dict[str, object]] | None = field(default=None, repr=False)
+    task: JobTask | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -52,7 +55,7 @@ class SQLiteJobMetadataStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                select job_id, status, created_at, updated_at, result_json, error
+                select job_id, status, created_at, updated_at, result_json, error, payload_json
                 from jobs
                 order by created_at desc
                 """
@@ -60,6 +63,7 @@ class SQLiteJobMetadataStore:
         records = []
         for row in rows:
             result_json = row["result_json"]
+            payload_json = row["payload_json"]
             records.append(
                 JobRecord(
                     job_id=row["job_id"],
@@ -68,6 +72,7 @@ class SQLiteJobMetadataStore:
                     updated_at=float(row["updated_at"]),
                     result=json.loads(result_json) if result_json else None,
                     error=row["error"],
+                    payload=json.loads(payload_json) if payload_json else None,
                 )
             )
         return records
@@ -76,13 +81,14 @@ class SQLiteJobMetadataStore:
         with self._connect() as conn:
             conn.execute(
                 """
-                insert into jobs(job_id, status, created_at, updated_at, result_json, error)
-                values (?, ?, ?, ?, ?, ?)
+                insert into jobs(job_id, status, created_at, updated_at, result_json, error, payload_json)
+                values (?, ?, ?, ?, ?, ?, ?)
                 on conflict(job_id) do update set
                     status = excluded.status,
                     updated_at = excluded.updated_at,
                     result_json = excluded.result_json,
-                    error = excluded.error
+                    error = excluded.error,
+                    payload_json = excluded.payload_json
                 """,
                 (
                     record.job_id,
@@ -91,6 +97,7 @@ class SQLiteJobMetadataStore:
                     record.updated_at,
                     json.dumps(record.result, ensure_ascii=False, default=str) if record.result is not None else None,
                     record.error,
+                    json.dumps(record.payload, ensure_ascii=False, default=str) if record.payload is not None else None,
                 ),
             )
 
@@ -109,29 +116,50 @@ class SQLiteJobMetadataStore:
                     created_at real not null,
                     updated_at real not null,
                     result_json text,
-                    error text
+                    error text,
+                    payload_json text
                 )
                 """
             )
+            columns = {row["name"] for row in conn.execute("pragma table_info(jobs)").fetchall()}
+            if "payload_json" not in columns:
+                conn.execute("alter table jobs add column payload_json text")
 
 
 class InMemoryJobStore:
-    def __init__(self, max_workers: int = 2, metadata_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        max_workers: int = 2,
+        metadata_path: str | Path | None = None,
+        task_factory: JobTaskFactory | None = None,
+    ) -> None:
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="semicon-agent-job")
         self._metadata = SQLiteJobMetadataStore(metadata_path) if metadata_path is not None else None
-        self._jobs: dict[str, JobRecord] = self._load_persisted_jobs()
+        self._task_factory = task_factory
+        self._jobs: dict[str, JobRecord] = {}
         self._lock = Lock()
+        self._load_persisted_jobs()
 
-    def submit(self, task: Callable[[], dict[str, object]]) -> JobRecord:
+    def submit(self, task: JobTask, payload: dict[str, object] | None = None) -> JobRecord:
         now = time.time()
-        record = JobRecord(job_id=str(uuid.uuid4()), status="queued", created_at=now, updated_at=now, task=task)
+        record = JobRecord(
+            job_id=str(uuid.uuid4()),
+            status="queued",
+            created_at=now,
+            updated_at=now,
+            payload=payload,
+            task=task,
+        )
+        self._enqueue(record, task)
+        return record
+
+    def _enqueue(self, record: JobRecord, task: JobTask) -> None:
         with self._lock:
             self._jobs[record.job_id] = record
             self._persist(record)
         future = self._executor.submit(self._run, record.job_id, task)
         with self._lock:
             record.future = future
-        return record
 
     def get(self, job_id: str) -> JobRecord | None:
         with self._lock:
@@ -169,15 +197,16 @@ class InMemoryJobStore:
                 return None
             if record.status not in {"failed", "cancelled"}:
                 raise ValueError("Only failed or cancelled jobs can be retried.")
-            task = record.task
+            task = self._task_from_payload(record.payload) if record.payload is not None else record.task
+            payload = record.payload
         if task is None:
             raise ValueError("Job cannot be retried because its task is unavailable.")
-        return self.submit(task)
+        return self.submit(task, payload=payload)
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
-    def _run(self, job_id: str, task: Callable[[], dict[str, object]]) -> None:
+    def _run(self, job_id: str, task: JobTask) -> None:
         self._update(job_id, status="running")
         try:
             result = task()
@@ -203,18 +232,29 @@ class InMemoryJobStore:
                 record.error = error
             self._persist(record)
 
-    def _load_persisted_jobs(self) -> dict[str, JobRecord]:
+    def _load_persisted_jobs(self) -> None:
         if self._metadata is None:
-            return {}
-        records = {}
+            return
         for record in self._metadata.load_jobs():
             if record.status in {"queued", "running"}:
+                task = self._task_from_payload(record.payload)
+                if task is not None:
+                    record.status = "queued"
+                    record.updated_at = time.time()
+                    record.error = None
+                    record.task = task
+                    self._enqueue(record, task)
+                    continue
                 record.status = "failed"
                 record.updated_at = time.time()
                 record.error = "Job was interrupted before completion."
                 self._metadata.upsert(record)
-            records[record.job_id] = record
-        return records
+            self._jobs[record.job_id] = record
+
+    def _task_from_payload(self, payload: dict[str, object] | None) -> JobTask | None:
+        if payload is None or self._task_factory is None:
+            return None
+        return self._task_factory(payload)
 
     def _persist(self, record: JobRecord) -> None:
         if self._metadata is not None:

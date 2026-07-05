@@ -60,7 +60,7 @@ Python으로 구성하는 것이다.
 - workflow graph executor
 - tracing dashboard
 - RAG/document ingestion
-- durable background worker / persistent async job queue
+- external durable worker / distributed async job queue
 - role-based auth boundary
 - production semiconductor analytics
 
@@ -630,6 +630,7 @@ core v7에는 SQLite job metadata persistence, compact API payload, parser timeo
 chunked upload write/cleanup이 들어갔다.
 core v8에는 role-based API tokens와 remote LLM payload minimization이 들어갔다.
 core v9에는 optional process-isolated parser mode가 들어갔다.
+core v10에는 queued/running job payload persistence와 restart resume이 들어갔다.
 
 ### 3-1-16. Semicon Agent에 적용할 설계 방향
 
@@ -683,6 +684,7 @@ semicon_agent/
 12. durable job metadata/compact API/parser timeout 보강 - core v7 보강 완료
 13. RBAC token/remote LLM payload minimization 보강 - core v8 보강 완료
 14. process-isolated parser mode 보강 - core v9 보강 완료
+15. queued/running job restart resume 보강 - core v10 보강 완료
 
 반도체 분석 함수 자체는 나중 문제다. 중요한 것은 agent platform이 안전하고
 관찰 가능하며 교체 가능해야 한다는 점이다.
@@ -860,7 +862,8 @@ API server의 기본 정책은 local-first다.
 - API 오류는 `detail` 문자열과 함께 `error.code`, `error.category`, `error.retryable`을 반환한다.
 - `/api/runs`와 `/api/jobs` 결과는 기본 compact payload를 반환한다.
 - 상세 plan/tool/event payload가 필요하면 request body에 `debug: true`를 넣는다.
-- job status/result metadata는 SQLite job DB에 저장된다.
+- job status/result metadata와 재시작 복구용 request payload는 SQLite job DB에 저장된다.
+- 서버 시작 시 payload가 남아 있는 `queued`/`running` job은 같은 `job_id`로 다시 실행 큐에 들어간다.
 
 운영자가 의도적으로 client-side LLM 설정을 허용하려면 다음 flag를 명시한다.
 
@@ -1130,7 +1133,7 @@ python -m pytest -p no:cacheprovider
 - API token auth와 structured error payload가 동작하는지
 - read/write role token이 API route를 제한하는지
 - API compact/debug payload가 동작하는지
-- API job 생성, 상태 조회, 실패 상태, queued cancellation, failed retry, metadata persistence가 동작하는지
+- API job 생성, 상태 조회, 실패 상태, queued cancellation, failed retry, metadata persistence, queued/running resume이 동작하는지
 - client-side LLM config와 risk approval이 기본 차단되는지
 - serverless self-check가 end-to-end로 동작하는지
 - deterministic eval suite가 핵심 agent 시나리오를 검증하는지
@@ -1184,6 +1187,7 @@ python -m pytest -p no:cacheprovider
 - long-running job support - core v5 보강 완료
 - queued job cancellation / failed job retry - core v6 보강 완료
 - SQLite job metadata persistence - core v7 보강 완료
+- queued/running job restart resume - core v10 보강 완료
 - durable resumable workflow
 
 ### Phase 5. Production interface
@@ -1195,12 +1199,13 @@ python -m pytest -p no:cacheprovider
 - client LLM/risk config guard - core v4 보강 완료
 - background worker
 - in-memory background job API - core v5 보강 완료
+- persisted job payload resume - core v10 보강 완료
 - run status endpoint - core v5 보강 완료
 - span-like trace export - core v6 보강 완료
 - optional bearer token auth boundary - core v6 보강 완료
 - role-based API tokens - core v8 보강 완료
 - compact API payload with debug detail - core v7 보강 완료
-- durable worker / persistent queue
+- external durable worker / distributed persistent queue
 - role-based auth boundary
 - audit log
 
@@ -1215,9 +1220,9 @@ python -m pytest -p no:cacheprovider
 - SPC chart data
 - recipe/process comparison
 
-현재 repository는 core v9 prototype에 해당한다. Agent runtime의 기본 골격, API/UI,
+현재 repository는 core v10 prototype에 해당한다. Agent runtime의 기본 골격, API/UI,
 artifact, self-check, eval, 보안 기본값, role token, job 제어, trace export, parser guard,
-process parser mode, job metadata persistence는
+process parser mode, job metadata persistence, queued/running job restart resume은
 들어갔지만 production platform은 아니다.
 
 ## 15. 운영 기준
@@ -1239,7 +1244,7 @@ production으로 확장할 때는 다음 기준을 적용한다.
 - 실제 반도체 공정 통계의 정확성
 - 대용량 파일 streaming 처리 성능
 - 장기 semantic memory
-- durable concurrent execution
+- external distributed queue와 exactly-once job execution
 - role-based user authentication
 - enterprise audit/compliance
 - production security boundary

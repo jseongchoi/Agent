@@ -5,12 +5,18 @@ from pathlib import Path
 from threading import Event
 
 import pandas as pd
+import pytest
 from fastapi.testclient import TestClient
 
 from semicon_agent.server.api import create_app
+from semicon_agent.server.jobs import JobRecord, SQLiteJobMetadataStore
 
 
 DATA_PATH = Path(__file__).parents[1] / "examples" / "sample_wafer.csv"
+
+
+def _job_payload() -> dict[str, object]:
+    return {"request": "analyze yield", "data_path": str(DATA_PATH), "max_steps": 3}
 
 
 def _wait_for_job(client: TestClient, job_id: str, timeout: float = 5.0) -> dict[str, object]:
@@ -289,6 +295,56 @@ def test_job_metadata_survives_app_recreation(tmp_path: Path) -> None:
     assert loaded.status_code == 200
     assert loaded.json()["status"] == "completed"
     assert loaded.json()["run_id"] == completed["run_id"]
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_interrupted_job_payload_resumes_after_app_recreation(tmp_path: Path, status: str) -> None:
+    session_db = tmp_path / "runs.sqlite"
+    job_db = tmp_path / "jobs.sqlite"
+    artifact_root = tmp_path / "artifacts"
+    now = time.time()
+    SQLiteJobMetadataStore(job_db).upsert(
+        JobRecord(
+            job_id=f"{status}-job",
+            status=status,
+            created_at=now,
+            updated_at=now,
+            payload=_job_payload(),
+        )
+    )
+
+    client = TestClient(create_app(session_db=session_db, job_db=job_db, artifact_root=artifact_root))
+    resumed = _wait_for_job(client, f"{status}-job")
+
+    assert resumed["status"] == "completed"
+    assert resumed["run_id"]
+    assert "Yield: 75.00%" in resumed["result"]["final_answer"]
+
+
+def test_persisted_failed_job_can_retry_from_payload(tmp_path: Path) -> None:
+    session_db = tmp_path / "runs.sqlite"
+    job_db = tmp_path / "jobs.sqlite"
+    artifact_root = tmp_path / "artifacts"
+    now = time.time()
+    SQLiteJobMetadataStore(job_db).upsert(
+        JobRecord(
+            job_id="failed-job",
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            error="transient failure",
+            payload=_job_payload(),
+        )
+    )
+
+    client = TestClient(create_app(session_db=session_db, job_db=job_db, artifact_root=artifact_root))
+    retried = client.post("/api/jobs/failed-job/retry")
+    assert retried.status_code == 202
+
+    completed = _wait_for_job(client, retried.json()["job_id"])
+    assert completed["status"] == "completed"
+    assert completed["job_id"] != "failed-job"
+    assert completed["run_id"]
 
 
 def test_job_endpoint_returns_failed_status_for_runtime_error(tmp_path: Path, monkeypatch) -> None:

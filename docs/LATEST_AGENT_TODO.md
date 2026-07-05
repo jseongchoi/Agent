@@ -34,7 +34,7 @@
 | Human-in-the-loop | 위험 작업 전 승인/거절/수정 가능 | CLI approval provider |
 | Persistence | run, event, artifact를 저장해 재현 가능하게 함 | SQLite run store, artifact store |
 | Async execution | 긴 작업을 background job으로 실행 | `/api/jobs` |
-| Job controls | 실패/대기 작업을 제어 | cancel/retry 추가 |
+| Job controls | 실패/대기/재시작 작업을 제어 | cancel/retry/resume 추가 |
 | Observability | 실행 과정을 trace로 확인 | event trace, span-like export |
 | Security | LLM/tool/API 경계를 기본 차단 | client LLM/risk 차단, token auth |
 | Evals | 에이전트 동작을 자동 회귀 검증 | `semicon_agent.eval` |
@@ -61,6 +61,7 @@
 | 완료 | Role-based API tokens | `semicon_agent/server/auth.py`, `server/api.py` | read/write route tests |
 | 완료 | Remote LLM payload minimization | `semicon_agent/llm/privacy.py`, `llm/open_model.py` | privacy/open-model tests |
 | 완료 | Process-isolated parser mode | `semicon_agent/tools/table_parser.py`, `tools/semiconductor.py` | process parser success/timeout tests |
+| 완료 | Resumable persisted jobs | `semicon_agent/server/jobs.py`, `server/api.py` | queued/running resume and persisted retry tests |
 
 ## 아직 남은 고우선순위 TODO
 
@@ -68,7 +69,7 @@
 
 | 우선순위 | TODO | 이유 |
 | --- | --- | --- |
-| P0 | Durable queue/worker | job metadata는 SQLite에 남지만, 프로세스 재시작 후 queued/running task를 재개하지는 못한다. |
+| P0 | External durable queue/worker | queued/running job payload 재개는 들어갔지만, 별도 worker process, 분산 큐, exactly-once 실행 보장은 없다. |
 | P0 | Deployment auth | role token은 들어갔지만 사용자 ID, rotation, expiry, enterprise identity 연동은 없다. |
 | P0 | Full upload streaming | API는 chunk write와 process parser mode를 지원하지만, Excel 검증은 여전히 로컬 파일 archive 전체를 검사한다. |
 | P0 | Remote LLM policy controls | payload 요약은 들어갔지만 tool별 outbound allowlist와 tenant별 정책은 없다. |
@@ -82,7 +83,7 @@
 
 현재 코드는 “반도체 데이터 분석 업무용 에이전트 프레임워크의 강한 프로토타입”이다.
 기능 데모 수준을 넘어 agent runtime, 정책, trace, artifact, API, job metadata persistence,
-parser guard, eval, CI까지 들어갔다.
+queued/running job resume, parser guard, eval, CI까지 들어갔다.
 
 다만 “최고 수준 production agent platform”이라고 부르려면 durable worker execution, enterprise auth,
 streaming transport, provider ecosystem, per-format parser sandbox policy, remote LLM policy controls가 더 필요하다.

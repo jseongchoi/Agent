@@ -298,7 +298,7 @@ API server의 기본 보안 정책은 다음과 같다.
 - `SEMICON_AGENT_API_TOKENS`를 쓰면 `read`, `write`, `admin` 역할 토큰을 나눌 수 있다.
 - API 오류는 `detail`과 함께 `error.code`, `error.category`, `error.retryable`을 반환한다.
 - run/job 응답은 기본적으로 compact payload다. plan, tool result, event까지 보려면 request body에 `debug: true`를 넣는다.
-- job status/result metadata는 SQLite job DB에 저장된다.
+- job status/result metadata와 재시작 복구용 request payload는 SQLite job DB에 저장된다.
 
 이 정책은 이 프로젝트가 localhost prototype이어도 나중에 네트워크에 노출될 가능성을
 고려한 기본 방어선이다.
@@ -307,6 +307,7 @@ API server의 기본 보안 정책은 다음과 같다.
 결과를 반환한다. `/api/jobs`는 `202 Accepted`와 `job_id`를 먼저 반환하고,
 `GET /api/jobs/{job_id}`로 `queued`, `running`, `completed`, `failed`, `cancelled` 상태를 확인한다.
 서버를 다시 띄워도 완료/실패 job metadata는 `SEMICON_AGENT_JOB_DB`에 남아 조회할 수 있다.
+payload가 남은 `queued`/`running` job은 서버 시작 시 같은 `job_id`로 다시 실행 큐에 들어간다.
 
 role token 예시는 다음과 같다.
 
@@ -692,7 +693,7 @@ parser timeout, upload content sniffing, chunked upload write는 들어갔다. `
 - enterprise authentication/authorization
 - enterprise audit/compliance
 - true token streaming
-- durable background job queue
+- external durable job queue와 exactly-once 실행 보장
 - resumable workflow
 - long-term semantic memory
 - configurable remote LLM outbound policy
@@ -705,7 +706,7 @@ parser timeout, upload content sniffing, chunked upload write는 들어갔다. `
 
 실제로 최신 Agent platform에 가까워지려면 다음 순서가 현실적이다.
 
-1. Durable background job queue: 현재 in-memory job을 persistent worker로 바꾼다.
+1. External durable worker: 현재 in-process resumable job을 별도 worker/queue 구조로 바꾼다.
 2. Run/job status endpoint 확장: progress와 running-job cooperative cancellation을 추가한다.
 3. True streaming: SSE 또는 WebSocket으로 token/tool event를 실시간 전송한다.
 4. Remote LLM policy: remote LLM에 보낼 payload를 tool별 summary와 정책으로 제한한다.

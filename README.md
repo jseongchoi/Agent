@@ -25,7 +25,7 @@ future open-model APIs.
 15. Job controls: background job polling, queued-job cancellation, failed-job retry.
 16. Observability export: trace events can be exported as span-like JSON.
 17. Eval CLI: deterministic agent scenario checks for CI.
-18. Durable job metadata: job status/result records persist in SQLite.
+18. Durable job records: job status/result records and resumable request payloads persist in SQLite.
 19. Compact API payloads: detailed plan/tool/event payloads require `debug: true`.
 20. Role-based API tokens: optional `read`, `write`, and `admin` bearer tokens.
 21. Remote LLM payload minimization: tool results are summarized before open-model synthesis.
@@ -54,6 +54,7 @@ future open-model APIs.
 - Optional process-isolated parser mode via `SEMICON_AGENT_PARSER_MODE=process`
 - Deterministic eval command for regression testing agent behavior
 - Minimized tool-result payloads for remote/open-model synthesis
+- Restart recovery for queued/running API jobs when their request payload was persisted
 
 ## Install
 
@@ -169,7 +170,8 @@ Server API defaults are intentionally local-first:
 - `SEMICON_AGENT_API_TOKENS` can define role-scoped tokens with `role:token` entries.
 - API errors include both `detail` and structured `error.code`, `error.category`, and `error.retryable`.
 - `/api/runs` and `/api/jobs` return compact result payloads by default. Pass `"debug": true` in the run request to include plans, tool results, and events.
-- Job metadata is persisted to SQLite. Use `--job-db` or `SEMICON_AGENT_JOB_DB` to choose the file.
+- Job metadata and resumable request payloads are persisted to SQLite. Use `--job-db` or `SEMICON_AGENT_JOB_DB` to choose the file.
+- On server startup, persisted `queued`/`running` jobs with payloads are re-enqueued. Protect the job DB if client-provided LLM API keys are enabled.
 
 To run the server with a server-side open-model profile:
 
